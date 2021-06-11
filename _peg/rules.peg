@@ -1,0 +1,108 @@
+{
+    package parse
+}
+
+Input = INIT header:Header body:Body footer:Footer EOF { return newExtension(header, body, footer) }
+
+Header = title:Mword _ By _ author:Mword _ BeginsHere Period { return newHeader(title, author)}
+Footer = title:Mword _ EndsHere Period { return newFooter(title)}
+Body = s:Sentence+ { return newBody(s) }
+
+Sentence = val:(Subheader / Definition / Report / Func / Decl / Rule) Period { return val, nil }
+
+Subheader = ("Volume" / "Book" / "Part" / "Section" / "Chapter") _ (!'\n' .)+ { return newSubheader(c.text) }
+
+Definition = "Definition" Colon _ A? obj:Mword called:DefinitionCalled? _ Is _ prop:Mword stmts:(Block / SingleBlock) { return newDefinition(obj, called, prop, stmts) }
+DefinitionCalled = _ '(' Called _ called:AnyWord ')' {return called.(string), nil }
+
+Report = "Report" _ action:Mword cond:ReportCond? stmts:Block { return newReport(action, cond, stmts)}
+ReportCond = _ When _ cond:Cond { return cond, nil }
+
+Rule = when:Mword Colon _ stmts:Stmt { return newRule(when, stmts)}
+
+Decl = val:(DeclDefVal / DeclKind / DeclInstance / DeclProp / DeclPropEnum) { return val, nil }
+DeclDefVal = A? obj:Mword _ Is _ ("initially" / "usually") _ val:Word { return newDeclDefVal(obj, val) }
+DeclKind = A? obj:Mword _ Is _ A? Kind _ Of _ kind:Mword { return newDeclKind(obj, kind) }
+DeclInstance = A? obj:Mword _ Is _ A? kind:Mword { return newDeclInstance(obj, kind) }
+DeclProp = A? obj:Mword _ Has _ A? kind:Mword _ Called _ prop:Mword { return newDeclProp(obj, kind, prop) }
+DeclPropEnum = A? obj:Mword _ CanBe _ first:Word rest:DeclPropEnumArgs* { return newDeclPropEnum(obj, first, rest) }
+DeclPropEnumArgs = (Comma / (_ "or")) _ arg:Word { return arg, nil }
+
+Func = "To" _ val:(FuncSay / FuncOther) { return val, nil }
+FuncSay = "say" _ name:AnyMword arg:FuncArg? args:FuncArgs* stmts:Block { return newFuncSay(name, arg, args, stmts) }
+FuncOther = name:AnyMword arg:FuncArg? args:FuncArgs* stmts:Block { return newFuncOther(name, arg, args, stmts) }
+FuncArg = _ '(' name:AnyWord _ '-' _ A? kind:Mword ')' { return newFuncArg(name, kind) }
+FuncArgs = _ prefix:AnyWord arg:FuncArg { return arg, nil }
+
+Stmt = (StmtSay / StmtDecide / StmtIf / StmtUnless / StmtLet / StmtRepeat / StmtWhile / StmtDoNothing / StmtIncrease / StmtDecrease / StmtNow / StmtCall)
+StmtSay = "say" _ str:QuotedString { return newStmtSay(str)}
+StmtDecide = "decide" _ result:Mword { return newStmtDecide(result) }
+StmtIf = "if" _ cond:Cond stmts:(Block / CommaBlock) otherif:StmtOtherwiseIf* other:StmtOtherwise? /*{ return newIf(cond, )}*/
+StmtOtherwiseIf = INDENTATION "otherwise if" Cond Block /* TODO */
+StmtOtherwise = INDENTATION "otherwise" Block /* TODO */
+StmtUnless = "unless" _ Cond (Block / CommaBlock) /* TODO */
+StmtLet = "let" _ (!Semicolon .)+ /* TODO */
+StmtRepeat = "repeat" _ Cond Block /* TODO */
+StmtWhile = "while" _ Cond Block /* TODO */
+StmtDoNothing = "do" _ "nothing" { return newStmtDoNothing() }
+StmtIncrease = "increase" _ A? Mword _ Of _ AnyWord _ By _ [0-9]+ /* TODO */
+StmtDecrease = "decrease" _ A? Mword _ Of _ AnyWord _ By _ [0-9]+ /* TODO */
+StmtNow = "now" _ Mword _ Is _ Expr /* TODO */
+StmtCall = Cond /* TODO */
+
+Expr = e:ExprPart rest:ExprRest* { return newExpr(e, rest) }
+ExprRest = _ Op _ p:ExprPart { return p, nil}
+ExprPart = ExprParens / ExprNode
+ExprParens = '(' e:Expr ')' { return newExpr(e, nil) }
+ExprNode = Number / Ident
+Op = ('+' / '-' / '*' / '/') { return newOp(c.text) }
+Ident = [a-zA-Z]+ { return newIdent(c.text) }
+Number = ([0-9]+) / "true" / "false" { return newNumber(c.text) }
+
+Cond = (!Colon !Comma !Semicolon !Period .)+ { return string(c.text), nil } /* TODO */
+Block = Colon _? NL INDENT s:Line+ DEDENT { return s, nil }
+SingleBlock = Colon _ s:Stmt { return []Stmt{s.(Stmt)}, nil }
+CommaBlock = Comma _ s:Stmt { return []Stmt{s.(Stmt)}, nil }
+Line = INDENTATION s:(Comment / Stmt) Semicolon? NL? { return s, nil }
+
+Quote = '"'
+QuotedString = Quote (!Quote Any)* Quote { return string(c.text), nil }
+
+AnyWord = [a-zA-Z0-9-]+ { return string(c.text), nil }
+AnyMword = AnyWord (_ AnyWord)* { return string(c.text), nil }
+
+Word = !Dword [a-zA-Z-]+ { return string(c.text), nil }
+Mword = Word (_ Word)* { return string(c.text), nil }
+
+A = ("an"i / "a"i / "the"i / "some"i) _
+By = "by" &_
+Is = ("is" / "are") &_
+Kind = "kind" &_
+Of = "of" &_
+Has = "has" &_
+CanBe = "can" _ "be" &_
+Called = "called" &_
+Usually = "usually" &_
+When = "when" &_
+BeginsHere = "begins" _ "here"
+EndsHere = "ends" _ "here"
+Dword = A / By / Is / Kind / Of / Has / CanBe / Called / Usually / When / BeginsHere / EndsHere
+
+INIT = #{ c.state["Indentation"] = 0; return nil }
+INDENT = #{ c.state["Indentation"] = c.state["Indentation"].(int) + 1; return nil }
+DEDENT = #{ c.state["Indentation"] = c.state["Indentation"].(int) - 1; return nil }
+INDENTATION = tabs:"\t"* &{ return len(sli(tabs)) == c.state["Indentation"].(int), nil }
+
+CommentStart = '['
+CommentEnd = ']'
+CommentNode = Comment / (!CommentStart !CommentEnd Any)
+Comment = CommentStart CommentNode* CommentEnd { return newComment(c.text) }
+
+_ = (' ' / Comment)+
+NL = '\n' !'\n'
+Period = ('.' (_? '\n')*) / ('\n' (_? '\n')+)
+Colon = ':'
+Semicolon = ';' _?
+Comma = ','
+Any = .
+EOF = !.
