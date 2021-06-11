@@ -123,8 +123,11 @@ func lexIndent(l *lexer) stateFn {
 }
 
 func lexWord(l *lexer) stateFn {
+	// Hack to support number vectors that look like this <10,15,11>.
+	angleVector := l.input[l.start.Pos] == '<'
+
 	for {
-		if r := l.next(); !isWordChar(r) {
+		if r := l.next(); !isWordChar(r) && !(angleVector && r == ',') {
 			break
 		}
 	}
