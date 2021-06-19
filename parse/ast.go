@@ -4,8 +4,6 @@ type Comment string
 
 type Sentence interface{}
 
-type UnknownSentence string
-
 type RoomDescr string
 
 type Subheader string
@@ -34,43 +32,70 @@ type FuncPart struct {
 }
 
 type Rule struct {
-	When    string // Before, instead, check, carry out, after, report.
-	Name    string // This is foo rule.
-	Action  string
-	Cond    string // When.
-	Phrases []Phrase
-	Comment Comment
+	Prefix   string // Before, instead, check, carry out, after, report, for.
+	Rulebook string
+	Name     string // This is foo rule.
+	Cond     string // When.
+	Phrases  []Phrase
+	Comment  Comment
 
 	rawPhrases []rawPhrase
 	rawCond    rawExpr
 }
 
-type Decl interface{}
+type Table string // TODO
 
-type DeclDefVal struct {
-	Object string
-	Val    string
+type Figure string
+
+type RuleFor string // Used for input parser and status line
+
+type Understand string // Used for input parser
+
+type DoesThePlayerMean string // Used for input parser
+
+type FileOf string
+
+type ListedInRulebook struct {
+	Rule     string
+	Rulebook string
+	Listed   bool
+	First    bool
+	Last     bool
 }
 
-type DeclKind struct {
+type Variable struct {
+	Name string
+	Kind string
+}
+
+type Kind struct {
+	Name string
+	Kind string
+}
+
+type Prop struct {
 	Object string
 	Kind   string
+	Name   string
 }
 
-type DeclInstance struct {
-	Object string
-	Kind   string
+type Action struct {
+	Name      string
+	NThings   int
+	Touchable bool
 }
 
-type DeclProp struct {
-	Object string
-	Kind   string
-	Prop   string
+type PropVal struct {
+	Prop    string
+	Object  string
+	Val     string
+	Usually bool
 }
 
-type DeclPropEnum struct {
+type PropEnum struct {
 	Object string
-	Enum   []string
+	Name   string
+	Vals   []string
 }
 
 type Phrase interface{}

@@ -14,6 +14,16 @@ func (p *Parser) parseArticle() string {
 	return it.val
 }
 
+func (p *Parser) parseArticleCapital() string {
+	it := p.next()
+	if it.typ != itemWord || !contains(it.val, "A", "An", "The", "a", "an", "the") {
+		p.backup()
+		return ""
+	}
+
+	return it.val
+}
+
 func (p *Parser) parseWord() (string, bool) {
 	it := p.next()
 	if it.typ != itemWord {
@@ -63,6 +73,15 @@ func (p *Parser) parseWordsUntil(v ...string) string {
 	return strings.Join(acc, " ")
 }
 
+func (p *Parser) mustParseWordsUntil(v ...string) string {
+	r := p.parseWordsUntil(v...)
+	if r == "" {
+		p.errorf("expected at least 1 word")
+	}
+
+	return r
+}
+
 func (p *Parser) mustParseColon() {
 	if it := p.next(); it.typ != itemColon {
 		p.errorf("expected colon, got %q", it.val)
@@ -88,6 +107,15 @@ func (p *Parser) mustParseRightParen() {
 	if it := p.next(); it.typ != itemRightParen {
 		p.errorf("expected right paren, got %q", it.val)
 	}
+}
+
+func (p *Parser) parseComma() bool {
+	if it := p.next(); it.typ != itemComma {
+		p.backup()
+		return false
+	}
+
+	return true
 }
 
 func (p *Parser) parseComment() Comment {

@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/kr/pretty"
 )
 
 type Parser struct {
@@ -74,10 +76,10 @@ func (p *Parser) errorf(format string, args ...interface{}) {
 func (p *Parser) parse() {
 	defer func() {
 		if r := recover(); r != nil {
+			panic(p.err) // TODO: remove
 			/*if r != errParse {
 				panic(r)
 			}*/
-			panic(p.err)
 		}
 	}()
 
@@ -107,21 +109,50 @@ func (p *Parser) parseSentence() Sentence {
 		return p.parseSubheader()
 	case it.val == "Definition":
 		return p.parseDefinition()
-	case it.val == "To":
+	case it.val == "To", it.val == "to":
 		return p.parseFunc()
-	case it.val == "Report", it.val == "Check":
-		return p.parseRule(it.val)
+	case it.val == "For":
+		return p.parseRule("For")
+	case it.val == "Report":
+		return p.parseRule("Report")
+	case it.val == "Check", it.val == "check":
+		return p.parseRule("Check")
 	case it.val == "Carry":
 		p.mustParseWordOneOf("out", "Out")
 		return p.parseRule("Carry out")
+	case it.val == "After":
+		return p.parseRule("After")
+	case it.val == "Before":
+		return p.parseRule("Before")
 	case it.val == "Every":
 		p.mustParseWordOneOf("turn")
 		return p.parseRule("Every turn")
+	case it.val == "When":
+		p.mustParseWordOneOf("play")
+		p.mustParseWordOneOf("begins")
+		return p.parseRule("When play begins")
 	case it.val == "This":
 		p.mustParseWordOneOf("is")
 		return p.parseRule("This is")
+	case it.val == "Table":
+		return p.parseTable()
+	case it.val == "Figure":
+		p.mustParseWordOneOf("of")
+		return p.parseFigure()
+	case it.val == "Rule":
+		p.mustParseWordOneOf("for")
+		return p.parseRuleFor()
+	case it.val == "Understand":
+		return p.parseUnderstand()
+	case it.val == "Does":
+		p.mustParseWordOneOf("the")
+		p.mustParseWordOneOf("player")
+		p.mustParseWordOneOf("mean")
+		return p.parseDoesThePlayerMean()
 	}
-	return p.parseUnknownSentence()
+
+	p.backup()
+	return p.parseDecl()
 }
 
 func (p *Parser) parseSubheader() Sentence {
@@ -148,10 +179,10 @@ func (p *Parser) parseDefinition() Sentence {
 
 	var def Definition
 	p.parseArticle()
-	def.Object = p.parseWordsUntil("is", "are")
+	def.Object = p.mustParseWordsUntil("is", "are")
 	def.Called = p.parseDefinitionCalled()
 	p.mustParseWordOneOf("is", "are")
-	def.Prop = p.parseWordsUntil("if", "when")
+	def.Prop = p.mustParseWordsUntil("if", "when")
 	if p.parseWordOneOf("if") {
 		def.Cond = p.parseExpr()
 		return def
@@ -201,10 +232,10 @@ func (p *Parser) parseFuncParts() []FuncPart {
 
 		if p.parseLeftParen() {
 			part := FuncPart{}
-			part.ArgName = p.parseWordsUntil("-")
+			part.ArgName = p.mustParseWordsUntil("-")
 			p.mustParseWordOneOf("-")
 			p.parseArticle()
-			part.ArgKind = p.parseWordsUntil()
+			part.ArgKind = p.mustParseWordsUntil()
 			p.mustParseRightParen()
 			parts = append(parts, part)
 			continue
@@ -218,8 +249,8 @@ func (p *Parser) parseFuncParts() []FuncPart {
 
 func (p *Parser) parseRule(when string) Sentence {
 	var r Rule
-	r.When = when
-	r.Action = p.parseWordsUntil("when")
+	r.Prefix = when
+	r.Rulebook = p.parseWordsUntil("when") // TODO: When play begins should be assigned here instead of prefix maybe
 	if p.parseWordOneOf("when") {
 		r.rawCond = p.parseRawExpr()
 	}
@@ -227,7 +258,7 @@ func (p *Parser) parseRule(when string) Sentence {
 		p.mustParseWordOneOf("this")
 		p.mustParseWordOneOf("is")
 		p.parseArticle()
-		r.Name = p.parseWordsUntil("rule") // TODO: except for warp portals rule
+		r.Name = p.mustParseWordsUntil("rule") // TODO: except for warp portals rule
 		p.mustParseWordOneOf("rule")
 		p.mustParseRightParen()
 	}
@@ -238,25 +269,283 @@ func (p *Parser) parseRule(when string) Sentence {
 	return r
 }
 
-func (p *Parser) parseUnknownSentence() Sentence {
-	p.backup()
-	it := p.next()
-	if it.typ != itemWord {
-		p.errorf("parseUnknownSentence: expected word, got %v", it.val)
-	}
-	str := new(strings.Builder)
-	str.WriteString(it.val)
+func (p *Parser) parseTable() Sentence {
+	return Table(p.parseUnknownSentence())
+}
+
+func (p *Parser) parseFigure() Sentence {
+	return Figure(p.parseUnknownSentence())
+}
+
+func (p *Parser) parseRuleFor() Sentence {
+	return RuleFor(p.parseUnknownSentence())
+}
+
+func (p *Parser) parseUnderstand() Sentence {
 	for {
 		it := p.next()
 		if it.typ == itemSentenceEnd {
 			break
 		}
-
-		str.WriteByte(' ')
-		str.WriteString(it.val)
 	}
 
-	return UnknownSentence(str.String())
+	return Understand(p.parseUnknownSentence())
+}
+
+func (p *Parser) parseDoesThePlayerMean() Sentence {
+	for {
+		it := p.next()
+		if it.typ == itemSentenceEnd {
+			break
+		}
+	}
+
+	return DoesThePlayerMean(p.parseUnknownSentence())
+}
+
+func (p *Parser) parseDecl() Sentence {
+	p.parseArticleCapital() // TODO
+	if p.parseWordOneOf("File") {
+		p.mustParseWordOneOf("of")
+		return FileOf(p.parseUnknownSentence())
+	}
+
+	errs := make([]error, 0, 10)
+
+	if s, err := p.parseDeclRule(); err != nil {
+		errs = append(errs, err)
+	} else {
+		return s
+	}
+
+	if s, err := p.parseDeclListedInRulebook(); err != nil {
+		errs = append(errs, err)
+	} else {
+		return s
+	}
+
+	if s, err := p.parseDeclVariable(); err != nil {
+		errs = append(errs, err)
+	} else {
+		return s
+	}
+
+	if s, err := p.parseDeclKind(); err != nil {
+		errs = append(errs, err)
+	} else {
+		return s
+	}
+
+	if s, err := p.parseDeclProp(); err != nil {
+		errs = append(errs, err)
+	} else {
+		return s
+	}
+
+	if s, err := p.parseDeclAction(); err != nil {
+		errs = append(errs, err)
+	} else {
+		return s
+	}
+
+	if s, err := p.parseDeclPropVal(); err != nil {
+		errs = append(errs, err)
+	} else {
+		return s
+	}
+
+	if s, err := p.parseDeclPropEnum(); err != nil {
+		errs = append(errs, err)
+	} else {
+		return s
+	}
+
+	pretty.Println("ERRS", errs)
+
+	pretty.Println("FIXME:", p.parseUnknownSentence())
+	return nil
+}
+
+func (p *Parser) declBackup(err *error) func() {
+	inititi := p.iti
+	return func() {
+		if r := recover(); r != nil {
+			if r != errParse {
+				panic(r)
+			}
+
+			*err = p.err
+			p.err = nil
+			p.iti = inititi
+		}
+	}
+}
+
+func (p *Parser) parseDeclRule() (s Sentence, err error) {
+	defer p.declBackup(&err)()
+
+	var r Rule
+	r.Rulebook = p.mustParseWordsUntil("rule")
+	p.mustParseWordOneOf("rule")
+	if p.parseLeftParen() {
+		p.mustParseWordOneOf("this")
+		p.mustParseWordOneOf("is")
+		p.parseArticle()
+		r.Name = p.mustParseWordsUntil("rule")
+		p.mustParseWordOneOf("rule")
+		p.mustParseRightParen()
+	}
+	p.mustParseColon()
+	p.parseComment()
+	p.parseRawPhrases()
+	p.mustParseSentenceEnd()
+	return r, nil
+}
+
+func (p *Parser) parseDeclListedInRulebook() (s Sentence, err error) {
+	defer p.declBackup(&err)()
+
+	var l ListedInRulebook
+	l.Rule = p.mustParseWordsUntil("rule")
+	p.mustParseWordOneOf("rule")
+	p.mustParseWordOneOf("is")
+	l.Listed = !p.parseWordOneOf("not")
+	p.mustParseWordOneOf("listed")
+	l.First = p.parseWordOneOf("first")
+	l.Last = p.parseWordOneOf("last")
+	p.mustParseWordOneOf("in")
+	p.parseArticle()
+	l.Rulebook = p.mustParseWordsUntil() // TODO: is not listed in any rulebook
+	p.mustParseSentenceEnd()
+	return l, nil
+}
+
+func (p *Parser) parseDeclVariable() (s Sentence, err error) {
+	defer p.declBackup(&err)()
+
+	var v Variable
+	v.Name = p.mustParseWordsUntil("is")
+	p.mustParseWordOneOf("is")
+	p.parseArticle()
+	p.parseWordOneOf("indexed")            // just ignore this word
+	v.Kind = p.mustParseWordsUntil("that") // TODO: list of clothing
+	p.mustParseWordOneOf("that")
+	p.mustParseWordOneOf("varies")
+	p.mustParseSentenceEnd()
+	return v, nil
+}
+
+func (p *Parser) parseDeclKind() (s Sentence, err error) {
+	defer p.declBackup(&err)()
+
+	var k Kind
+	k.Name = p.mustParseWordsUntil("is", "are")
+	p.mustParseWordOneOf("is", "are")
+	p.mustParseWordOneOf("a")
+	p.mustParseWordOneOf("kind")
+	p.mustParseWordOneOf("of")
+	k.Kind = p.mustParseWordsUntil()
+	p.mustParseSentenceEnd()
+	return k, nil
+}
+
+func (p *Parser) parseDeclProp() (s Sentence, err error) {
+	defer p.declBackup(&err)()
+
+	var pr Prop
+	pr.Object = p.mustParseWordsUntil("has")
+	p.mustParseWordOneOf("has")
+	p.mustParseWordOneOf("a")
+	pr.Kind = p.mustParseWordsUntil("called")
+	p.mustParseWordOneOf("called")
+	pr.Name = p.mustParseWordsUntil()
+	p.mustParseSentenceEnd()
+	return pr, nil
+}
+
+func (p *Parser) parseDeclAction() (s Sentence, err error) {
+	defer p.declBackup(&err)()
+
+	var a Action
+	a.Name = p.mustParseWordsUntil("is")
+	p.mustParseWordOneOf("is")
+	p.mustParseWordOneOf("an")
+	p.mustParseWordOneOf("action")
+	p.mustParseWordOneOf("applying")
+	p.mustParseWordOneOf("to")
+	if p.parseWordOneOf("nothing") {
+		a.NThings = 0
+	} else if p.parseWordOneOf("one") {
+		a.NThings = 1
+		a.Touchable = p.parseWordOneOf("touchable")
+		p.mustParseWordOneOf("thing")
+	} else if p.parseWordOneOf("two") {
+		a.NThings = 2
+		p.mustParseWordOneOf("things", "objects")
+	}
+	p.mustParseSentenceEnd()
+	return a, nil
+}
+
+func (p *Parser) parseDeclPropVal() (s Sentence, err error) {
+	defer p.declBackup(&err)()
+	// TODO: pack of cards, chest of drawers, belt of sturdiness etc
+
+	var v PropVal
+	v.Prop = p.mustParseWordsUntil("of")
+	p.mustParseWordOneOf("of")
+	p.parseArticle()
+	v.Object = p.mustParseWordsUntil("is")
+	p.mustParseWordOneOf("is")
+	v.Usually = p.parseWordOneOf("usually")
+	p.parseArticle()
+	if p.peek().typ == itemQuotedString {
+		v.Val = p.next().val
+	} else {
+		v.Val = p.mustParseWordsUntil()
+	}
+	p.mustParseSentenceEnd()
+	return v, nil
+}
+
+func (p *Parser) parseDeclPropEnum() (s Sentence, err error) {
+	defer p.declBackup(&err)()
+
+	var e PropEnum
+	e.Object = p.mustParseWordsUntil("can")
+	p.mustParseWordOneOf("can")
+	p.mustParseWordOneOf("be")
+	for {
+		v := p.mustParseWordsUntil("or")
+		e.Vals = append(e.Vals, v)
+		if !p.parseComma() && !p.parseWordOneOf("or") {
+			break
+		}
+	}
+	if p.parseLeftParen() {
+		p.mustParseWordOneOf("this")
+		p.mustParseWordOneOf("is")
+		p.parseArticle()
+		e.Name = p.mustParseWordsUntil("property")
+		p.mustParseWordOneOf("property")
+		p.mustParseRightParen()
+	}
+	p.mustParseSentenceEnd()
+	return e, nil
+}
+
+func (p *Parser) parseUnknownSentence() string {
+	s := new(strings.Builder)
+	for {
+		it := p.next()
+		if it.typ == itemSentenceEnd {
+			break
+		}
+		s.WriteString(" ")
+		s.WriteString(it.val)
+	}
+
+	return s.String()
 }
 
 func (p *Parser) parseRawPhrases() []rawPhrase {
