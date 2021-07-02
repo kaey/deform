@@ -14,6 +14,7 @@ type Definition struct {
 	Prop       string
 	Cond       Expr
 	rawPhrases []rawPhrase
+	rawCond    rawExpr
 }
 
 type Func struct {
@@ -43,15 +44,30 @@ type Rule struct {
 	rawCond    rawExpr
 }
 
-type Table string // TODO
+type Table struct {
+	Name        string
+	Continued   bool
+	ColNames    []string
+	ColKinds    []string
+	RowComments []Comment
+	Rows        [][]string
+}
 
-type Figure string
+type Figure struct {
+	Name     string
+	FilePath string
+}
 
 type RuleFor string // Used for input parser and status line
 
 type Understand string // Used for input parser
 
 type DoesThePlayerMean string // Used for input parser
+
+type ThereAre struct {
+	N    int
+	Kind string
+}
 
 type FileOf string
 
@@ -64,8 +80,9 @@ type ListedInRulebook struct {
 }
 
 type Variable struct {
-	Name string
-	Kind string
+	Name  string
+	Kind  string
+	Array bool
 }
 
 type Kind struct {
@@ -96,6 +113,45 @@ type PropEnum struct {
 	Object string
 	Name   string
 	Vals   []string
+}
+
+type Relation struct {
+	Name      string
+	Object    string
+	NObjects  int
+	Kind      string
+	Object2   string
+	NObjects2 int
+	Kind2     string
+
+	rawCond rawExpr
+}
+
+type Verb struct {
+	Name string
+	Alts []string // alternative verb forms
+	Rel  string
+}
+
+type Vector struct {
+	Pattern string
+	Kind    string
+	Parts   []string
+}
+
+type Is struct {
+	Object    string
+	Value     string
+	EnumVal   []string
+	Direction string // for rooms only
+	Usually   bool
+	Initially bool
+	Negate    bool
+}
+
+type IsIn struct {
+	Objects []string
+	Where   string
 }
 
 type Phrase interface{}

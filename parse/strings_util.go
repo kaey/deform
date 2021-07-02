@@ -15,10 +15,12 @@ func contains(v string, s ...string) bool {
 func concat(s ...string) string {
 	if len(s) == 0 {
 		return ""
+	} else if len(s) == 1 {
+		return s[0]
 	}
+
 	b := new(strings.Builder)
 	b.Grow(10)
-
 	b.WriteString(s[0])
 	for i := 0; i < len(s)-1; i++ {
 		b.WriteString(", ")

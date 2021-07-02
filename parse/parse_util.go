@@ -1,6 +1,7 @@
 package parse
 
 import (
+	"strconv"
 	"strings"
 )
 
@@ -76,7 +77,7 @@ func (p *Parser) parseWordsUntil(v ...string) string {
 func (p *Parser) mustParseWordsUntil(v ...string) string {
 	r := p.parseWordsUntil(v...)
 	if r == "" {
-		p.errorf("expected at least 1 word")
+		p.errorf("expected at least 1 word, got %v", p.items[p.iti+1].val)
 	}
 
 	return r
@@ -86,6 +87,15 @@ func (p *Parser) mustParseColon() {
 	if it := p.next(); it.typ != itemColon {
 		p.errorf("expected colon, got %q", it.val)
 	}
+}
+
+func (p *Parser) parseSentenceEnd() bool {
+	if it := p.next(); it.typ != itemSentenceEnd {
+		p.backup()
+		return false
+	}
+
+	return true
 }
 
 func (p *Parser) mustParseSentenceEnd() {
@@ -139,4 +149,41 @@ func (p *Parser) parseIndent() int {
 	}
 
 	return len(it.val)
+}
+
+func (p *Parser) parseNumber() (int, bool) {
+	it := p.next()
+	if it.typ != itemWord {
+		p.backup()
+		return 0, false
+	}
+
+	n, err := strconv.Atoi(it.val)
+	if err != nil {
+		p.backup()
+		return 0, false
+	}
+
+	return n, true
+}
+
+func (p *Parser) parseNL() bool {
+	if it := p.next(); it.typ != itemNL {
+		p.backup()
+		return false
+	}
+
+	return true
+}
+
+func (p *Parser) mustParseNL() {
+	if it := p.next(); it.typ != itemNL {
+		p.errorf("expected newline, got %q", it.val)
+	}
+}
+
+func (p *Parser) mustParseTab() {
+	if it := p.next(); it.typ != itemTab {
+		p.errorf("expected tab, got %q", it.val)
+	}
 }

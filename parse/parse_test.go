@@ -6,20 +6,11 @@ import (
 	"github.com/kaey/deform/parse"
 )
 
-func TestLex(t *testing.T) {
+func TestSimple(t *testing.T) {
 	for _, f := range files {
-		ss, err := parse.ParseFile(f)
+		_, err := parse.ParseFile(f)
 		if err != nil {
 			t.Fatal(err)
 		}
-		_ = ss
 	}
-	/*
-		s, err := parse.ParseFile("../testdata/aaa.i7x")
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		pretty.Println(s)
-	*/
 }

@@ -21,6 +21,9 @@ const (
 	itemLeftParen
 	itemRightParen
 	itemComment
+	itemSpace
+	itemNL
+	itemTab
 )
 
 type item struct {
@@ -95,14 +98,45 @@ func (l *lexer) emit(typ itemType) {
 	l.start = l.pos
 }
 
-func (l *lexer) ignore() {
-	l.start = l.pos
-}
-
 func (l *lexer) errorf(format string, args ...interface{}) stateFn {
 	it := item{itemError, fmt.Sprintf(format, args...), l.start}
 	l.items = append(l.items, it)
 	return nil
+}
+
+func lexSpace(l *lexer) stateFn {
+	for {
+		if r := l.next(); r != ' ' {
+			l.backup()
+			l.emit(itemSpace)
+			return lexSentence
+		}
+	}
+}
+
+func lexNewline(l *lexer) stateFn {
+	if r := l.peek(); r != '\n' {
+		l.emit(itemNL)
+		return lexIndent
+	}
+
+	for {
+		if r := l.next(); r != '\n' {
+			l.backup()
+			l.emit(itemSentenceEnd)
+			return lexIndent
+		}
+	}
+}
+
+func lexTab(l *lexer) stateFn {
+	for {
+		if r := l.next(); r != '\t' {
+			l.backup()
+			l.emit(itemTab)
+			return lexSentence
+		}
+	}
 }
 
 func lexIndent(l *lexer) stateFn {
@@ -170,21 +204,11 @@ func lexSentence(l *lexer) stateFn {
 		l.emit(itemEOF)
 		return nil
 	case r == ' ':
-		l.ignore()
-		return lexSentence
+		return lexSpace
 	case r == '\n':
-		if r := l.peek(); r == '\n' {
-			for {
-				r := l.next()
-				if r != '\n' {
-					l.backup()
-					l.emit(itemSentenceEnd)
-					return lexIndent
-				}
-			}
-		}
-		l.ignore()
-		return lexIndent
+		return lexNewline
+	case r == '\t':
+		return lexTab
 	case r == '"':
 		return lexQuotedString
 	case r == '.':

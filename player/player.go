@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	"github.com/kaey/deform/parse"
 	"golang.org/x/term"
@@ -10,17 +12,12 @@ import (
 
 func main() {
 	if err := Main(); err != nil {
-		fmt.Fprint(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
 func Main() error {
-	tree, err := parse.ParseFile("../testdata/aaa.i7x")
-	if err != nil {
-		return err
-	}
-
 	devtty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0600)
 	if err != nil {
 		return fmt.Errorf("open tty error error: %w", err)
@@ -35,89 +32,140 @@ func Main() error {
 	defer term.Restore(int(devtty.Fd()), stty)
 	tty := term.NewTerminal(devtty, "> ")
 
-	interp, err := evalBook(tty, tree)
-	if err != nil {
-		return err
+	terp := newInterp(tty)
+	for _, f := range files {
+		ss, err := parse.ParseFile(f)
+		if err != nil {
+			return err
+		}
+		for _, s := range ss {
+			terp.evalSentence(s)
+		}
 	}
 
-	_ = interp
-
-	return nil
+	for {
+		line, err := tty.ReadLine()
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+		switch strings.TrimSpace(line) {
+		case "q", "quit":
+			return nil
+		case "v", "vars":
+			for k, v := range terp.Vars {
+				arr := ""
+				if v.Array {
+					arr = "[]"
+				}
+				fmt.Fprintf(tty, "%v: %v%v = %v\n", k, arr, v.Kind, v.Val)
+			}
+		}
+	}
 }
 
 type Interp struct {
-	tty     *term.Terminal
-	Kinds   map[string]Kind
-	Objects map[string]Object
-	Rules   map[string]Rule
+	tty *term.Terminal
+
+	Vars      map[string]Var
+	Tables    map[string]Table
+	Rulebooks map[string]Rulebook
+	Actions   map[string]Action
 }
 
-func evalBook(tty *term.Terminal, tree interface{}) (*Interp, error) {
-	book := tree.(parse.Book)
-	if book.Header.Title != book.Footer.Title {
-		return nil, fmt.Errorf("expected title %q in footer, got %q", book.Header.Title, book.Footer.Title)
+func newInterp(tty *term.Terminal) *Interp {
+	terp := &Interp{
+		tty:       tty,
+		Vars:      make(map[string]Var),
+		Rulebooks: make(map[string]Rulebook),
+		Actions:   make(map[string]Action),
 	}
 
-	in := &Interp{
-		tty:     tty,
-		Kinds:   make(map[string]Kind, 100),
-		Objects: make(map[string]Object, 100),
-		Rules:   make(map[string]Rule, 100),
-	}
-
-	for _, s := range book.Body.Sentences {
-		in.eval(s)
-	}
-
-	for _, s := range in.Rules["When play begins"].What {
-		in.eval(s)
-	}
-
-	return in, nil
+	terp.Vars["maximum score"] = Var{Kind: "number"}
+	return terp
 }
 
-func (in *Interp) eval(sentence parse.Sentence) {
-	switch v := sentence.(type) {
-	case parse.StmtNewKind:
-	case parse.StmtNewInstance:
-	case parse.StmtSay:
-		fmt.Fprint(in.tty, v.Str)
-	case parse.Rule:
-		in.Rules[v.When] = Rule{
-			When: v.When,
-			What: v.What,
+func (terp *Interp) evalSentence(s parse.Sentence) {
+	switch v := s.(type) {
+	case parse.Subheader:
+	case parse.Figure:
+	case parse.FileOf:
+	case parse.Understand:
+	case parse.DoesThePlayerMean:
+	case parse.RuleFor:
+	case parse.Func:
+	case parse.Table:
+		// name := strings.ToLower(v.Name)
+	case parse.Variable:
+		name := strings.ToLower(v.Name)
+		if _, exists := terp.Vars[name]; exists {
+			panic(fmt.Sprintf("var exists: %v", v.Name))
 		}
+		terp.Vars[name] = Var{
+			Kind:  strings.ToLower(v.Kind),
+			Array: v.Array,
+		}
+	case parse.Definition:
+	case parse.Is:
+		name := strings.ToLower(v.Object)
+		if _, exists := terp.Vars[name]; exists {
+			vv := terp.Vars[name]
+			vv.Val = v.Value
+			terp.Vars[name] = vv
+			return
+		}
+
+		if v.Value == "rulebook" {
+			if _, exists := terp.Rulebooks[name]; exists {
+				panic(fmt.Sprintf("rulebook exists: %v", v.Object))
+			}
+			terp.Rulebooks[name] = Rulebook{}
+			return
+		}
+
+		// panic(fmt.Sprintf("does not exist: %+#v", v))
+	case parse.IsIn:
+	case parse.ListedInRulebook:
+		// panic(fmt.Sprintf("listed: %v", v))
+	case parse.Rule:
+	case parse.Action:
+		name := strings.ToLower(v.Name)
+		terp.Actions[name] = Action{
+			NThings:   v.NThings,
+			Touchable: v.Touchable,
+		}
+	case parse.Prop:
+	case parse.PropVal:
+	case parse.PropEnum:
+	case parse.Kind:
+	case parse.ThereAre:
+	case parse.RoomDescr:
+	case parse.Vector:
+	case parse.Relation:
+	case parse.Verb:
 	default:
-		panic(fmt.Sprintf("unknown sentence %+#v", v))
+		panic(fmt.Sprintf("unknown sentence %T", v))
 	}
 }
 
-type Kind struct {
-	Name   string
-	Parent *Kind
-	Props  map[string]Value
+type Var struct {
+	Val   string
+	Kind  string
+	ValA  []string
+	Array bool
 }
 
-type Object struct {
-	Name  string
-	Props map[string]Value
+type Table struct {
+	Rows [][]string
 }
 
-type Value struct {
-	Type ValueType
-	Int  int
-	Str  string
+type Rulebook struct {
+	Rules []string
 }
 
-type ValueType int
-
-const (
-	ValueTypeInt = iota
-	ValueTypeBool
-	ValueTypeStr
-)
-
-type Rule struct {
-	When string
-	What []parse.Stmt
+type Action struct {
+	NThings   int
+	Touchable bool
 }

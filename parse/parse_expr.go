@@ -32,7 +32,6 @@ func (p *Parser) parseExprRest() []ExprPart {
 		}
 		op := p.parseOp()
 		e := p.parseExprE()
-		pretty.Println(string(op), e)
 		rest = append(rest, ExprPart{op, e})
 	}
 
