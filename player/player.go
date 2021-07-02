@@ -53,7 +53,7 @@ func Main() error {
 		}
 		switch strings.TrimSpace(line) {
 		case "q", "quit":
-			return nil
+			return fmt.Errorf("quit") // TODO: change to nil
 		case "v", "vars":
 			for k, v := range terp.Vars {
 				arr := ""
@@ -61,6 +61,21 @@ func Main() error {
 					arr = "[]"
 				}
 				fmt.Fprintf(tty, "%v: %v%v = %v\n", k, arr, v.Kind, v.Val)
+			}
+		case "k", "kinds":
+			for k, v := range terp.Kinds {
+				fmt.Fprintf(tty, "%v", k)
+				for p := v.Parent; p != ""; {
+					fmt.Fprintf(tty, " -> %v", p)
+					p = terp.Kinds[p].Parent
+				}
+				fmt.Fprintf(tty, "\n")
+			}
+		case "t", "tables":
+			for n, t := range terp.Tables {
+				for i, row := range t.Rows {
+					fmt.Fprintf(tty, "%v[%v]: %v\n", n, i, row)
+				}
 			}
 		}
 	}
@@ -73,17 +88,35 @@ type Interp struct {
 	Tables    map[string]Table
 	Rulebooks map[string]Rulebook
 	Actions   map[string]Action
+	Kinds     map[string]Kind
 }
 
 func newInterp(tty *term.Terminal) *Interp {
 	terp := &Interp{
 		tty:       tty,
 		Vars:      make(map[string]Var),
+		Tables:    make(map[string]Table),
 		Rulebooks: make(map[string]Rulebook),
 		Actions:   make(map[string]Action),
+		Kinds:     make(map[string]Kind),
 	}
 
 	terp.Vars["maximum score"] = Var{Kind: "number"}
+	terp.Kinds["object"] = Kind{}
+	terp.Kinds["direction"] = Kind{Parent: "object"}
+	terp.Kinds["room"] = Kind{Parent: "object"}
+	terp.Kinds["region"] = Kind{Parent: "object"}
+	terp.Kinds["thing"] = Kind{Parent: "object"}
+	terp.Kinds["door"] = Kind{Parent: "thing"}
+	terp.Kinds["container"] = Kind{Parent: "thing"}
+	terp.Kinds["player's holdall"] = Kind{Parent: "container"}
+	terp.Kinds["supporter"] = Kind{Parent: "thing"}
+	terp.Kinds["backdrop"] = Kind{Parent: "thing"}
+	terp.Kinds["device"] = Kind{Parent: "thing"}
+	terp.Kinds["person"] = Kind{Parent: "thing"}
+	terp.Kinds["man"] = Kind{Parent: "person"}
+	terp.Kinds["woman"] = Kind{Parent: "person"}
+	terp.Kinds["animal"] = Kind{Parent: "person"}
 	return terp
 }
 
@@ -97,7 +130,17 @@ func (terp *Interp) evalSentence(s parse.Sentence) {
 	case parse.RuleFor:
 	case parse.Func:
 	case parse.Table:
-		// name := strings.ToLower(v.Name)
+		name := strings.ToLower(v.Name)
+		t := terp.Tables[name]
+		// TODO: col kinds
+		for _, row := range v.Rows {
+			m := make(map[string]string, len(v.ColNames))
+			for i, colname := range v.ColNames {
+				m[colname] = row[i]
+			}
+			t.Rows = append(t.Rows, m)
+		}
+		terp.Tables[name] = t
 	case parse.Variable:
 		name := strings.ToLower(v.Name)
 		if _, exists := terp.Vars[name]; exists {
@@ -140,6 +183,7 @@ func (terp *Interp) evalSentence(s parse.Sentence) {
 	case parse.PropVal:
 	case parse.PropEnum:
 	case parse.Kind:
+		terp.Kinds[strings.ToLower(v.Name)] = Kind{Parent: strings.ToLower(v.Kind)}
 	case parse.ThereAre:
 	case parse.RoomDescr:
 	case parse.Vector:
@@ -158,7 +202,8 @@ type Var struct {
 }
 
 type Table struct {
-	Rows [][]string
+	Kinds map[string]string
+	Rows  []map[string]string
 }
 
 type Rulebook struct {
@@ -168,4 +213,8 @@ type Rulebook struct {
 type Action struct {
 	NThings   int
 	Touchable bool
+}
+
+type Kind struct {
+	Parent string
 }
