@@ -1,27 +1,36 @@
-package parse
-
-type Comment string
+package main
 
 type Sentence interface{}
 
-type RoomDescr string
+type Comment struct {
+	Pos Pos
+	Str string
+}
 
-type Subheader string
+type QuotedString struct {
+	Pos   Pos
+	Parts []interface{} // contains string or PhraseFuncCall
+}
+
+type Subheader struct {
+	Pos Pos
+	Str string
+}
 
 type Definition struct {
+	Pos        Pos
 	Object     string
 	Called     string
 	Prop       string
-	Cond       Expr
-	rawPhrases []rawPhrase
-	rawCond    rawExpr
+	RawPhrases []item
+	RawCond    []item
 }
 
 type Func struct {
-	Parts   []FuncPart
-	Comment Comment
-
-	rawPhrases []rawPhrase
+	Pos        Pos
+	Parts      []FuncPart
+	Comment    Comment
+	RawPhrases []item
 }
 
 type FuncPart struct {
@@ -33,29 +42,28 @@ type FuncPart struct {
 }
 
 type Rule struct {
-	Prefix   string // Before, instead, check, carry out, after, report, for.
-	Rulebook string
-	Name     string // This is foo rule.
-	Cond     string // When.
-	Phrases  []Phrase
-	Comment  Comment
-
-	rawPhrases []rawPhrase
-	rawCond    rawExpr
+	Pos        Pos
+	Rulebook   string
+	Name       string // This is foo rule.
+	Comment    Comment
+	RawPhrases []item
+	RawCond    []item
 }
 
 type Table struct {
+	Pos         Pos
 	Name        string
 	Continued   bool
 	ColNames    []string
 	ColKinds    []string
 	RowComments []Comment
-	Rows        [][]string
+	Rows        [][]interface{} // contains string or QuotedString
 }
 
 type Figure struct {
+	Pos      Pos
 	Name     string
-	FilePath string
+	FilePath QuotedString
 }
 
 type RuleFor string // Used for input parser and status line
@@ -65,6 +73,7 @@ type Understand string // Used for input parser
 type DoesThePlayerMean string // Used for input parser
 
 type ThereAre struct {
+	Pos  Pos
 	N    int
 	Kind string
 }
@@ -72,6 +81,7 @@ type ThereAre struct {
 type FileOf string
 
 type ListedInRulebook struct {
+	Pos      Pos
 	Rule     string
 	Rulebook string
 	Listed   bool
@@ -80,42 +90,50 @@ type ListedInRulebook struct {
 }
 
 type Variable struct {
+	Pos   Pos
 	Name  string
 	Kind  string
 	Array bool
 }
 
 type Kind struct {
+	Pos  Pos
 	Name string
 	Kind string
 }
 
 type Prop struct {
+	Pos    Pos
 	Object string
 	Kind   string
+	Array  bool
 	Name   string
 }
 
 type Action struct {
+	Pos       Pos
 	Name      string
 	NThings   int
 	Touchable bool
 }
 
 type PropVal struct {
+	Pos     Pos
 	Prop    string
 	Object  string
-	Val     string
+	Val     interface{} // string or QuotedString
 	Usually bool
 }
 
 type PropEnum struct {
+	Pos    Pos
 	Object string
 	Name   string
 	Vals   []string
 }
 
 type Relation struct {
+	Pos       Pos
 	Name      string
 	Object    string
 	NObjects  int
@@ -123,25 +141,27 @@ type Relation struct {
 	Object2   string
 	NObjects2 int
 	Kind2     string
-
-	rawCond rawExpr
+	RawCond   []item
 }
 
 type Verb struct {
+	Pos  Pos
 	Name string
 	Alts []string // alternative verb forms
 	Rel  string
 }
 
 type Vector struct {
+	Pos     Pos
 	Pattern string
 	Kind    string
 	Parts   []string
 }
 
 type Is struct {
+	Pos       Pos
 	Object    string
-	Value     string
+	Value     interface{} // string or QuotedString
 	EnumVal   []string
 	Direction string // for rooms only
 	Usually   bool
@@ -150,30 +170,20 @@ type Is struct {
 }
 
 type IsIn struct {
+	Pos     Pos
 	Objects []string
 	Where   string
 }
 
-type Phrase interface{}
-
-type PhraseSay string
-
-type PhraseDecide struct {
-	Result string
-}
-
-type PhraseIf struct{}
-
-type PhraseDoNothing struct{}
-
 type Expr struct {
-	E    interface{}
-	Rest []ExprPart
+	Unary Op
+	E     interface{}
+	Rest  []ExprPart
 }
 
 type ExprPart struct {
-	Op Op
-	E  interface{}
+	Op   Op
+	Expr Expr
 }
 
 type Op byte
@@ -182,14 +192,57 @@ type Ident string
 
 type Number int
 
-type rawPhrase struct {
-	Comment  Comment
-	Pos      Pos
-	items    []item
-	children []rawPhrase
+type String string
+
+type Phrase interface{}
+
+type PhraseNow struct {
+	Pos    Pos
+	Object string
+	Expr   Expr
 }
 
-type rawExpr struct {
+type PhraseListAdd struct {
 	Pos   Pos
-	items []item
+	Value interface{}
+	List  string
+}
+
+type PhraseLet struct {
+	Pos    Pos
+	Object string
+	Value  string
+}
+
+type PhraseWhile struct {
+	Pos     Pos
+	Expr    Expr
+	Phrases []Phrase
+}
+
+type PhraseIf struct {
+	Pos     Pos
+	Expr    Expr
+	Phrases []Phrase
+}
+
+type PhraseOtherwiseIf struct {
+	Pos     Pos
+	Expr    Expr
+	Phrases []Phrase
+}
+
+type PhraseSay struct {
+	Pos Pos
+	Say interface{} // contains QuotedString or PhraseFuncCall
+}
+
+type PhraseDecide struct {
+	Pos    Pos
+	Result string
+}
+
+type PhraseFuncCall struct {
+	Pos  Pos
+	Func string
 }

@@ -1,4 +1,4 @@
-package parse
+package main
 
 import (
 	"fmt"
@@ -14,7 +14,10 @@ const (
 	itemSentenceEnd
 	itemIndent
 	itemWord
-	itemQuotedString
+	itemQuotedStringStart
+	itemQuotedStringEnd
+	itemQuotedStringText
+	itemQuotedStringAction
 	itemComma
 	itemColon
 	itemSemicolon
@@ -33,6 +36,7 @@ type item struct {
 }
 
 type Pos struct {
+	Name string
 	Pos  int
 	Line int
 }
@@ -42,21 +46,19 @@ const eof = -1
 type stateFn func(*lexer) stateFn
 
 type lexer struct {
-	name  string
 	input string
 	items []item
-	width int
+	width int // number of bytes in last scanned rune.
 	pos   Pos
 	start Pos
 }
 
 func lex(name, input string) []item {
 	l := &lexer{
-		name:  name,
 		input: input,
 		items: make([]item, 0, 5000),
-		pos:   Pos{Line: 1},
-		start: Pos{Line: 1},
+		pos:   Pos{Name: name, Line: 1},
+		start: Pos{Name: name, Line: 1},
 	}
 	for state := lexSentence; state != nil; {
 		state = state(l)
@@ -168,15 +170,36 @@ func lexWord(l *lexer) stateFn {
 }
 
 func lexQuotedString(l *lexer) stateFn {
+	l.emit(itemQuotedStringStart)
 	for {
 		if r := l.next(); r == '"' {
 			break
+		} else if r == ']' {
+			return l.errorf("closing bracket ] without matching opening bracket [")
+		} else if r == '[' {
+			l.backup()
+			if l.pos.Pos > l.start.Pos {
+				l.emit(itemQuotedStringText)
+			}
+			l.next()
+			for {
+				if r := l.next(); r == '"' {
+					return l.errorf("unterminated action in quoted string")
+				} else if r == ']' {
+					break
+				} else if r == '[' {
+					return l.errorf("nested action in quoted string")
+				} else if r == eof {
+					return l.errorf("unterminated action in quoted string")
+				}
+			}
+			l.emit(itemQuotedStringAction)
 		} else if r == eof {
 			return l.errorf("unterminated quoted string")
 		}
 	}
 
-	l.emit(itemQuotedString)
+	l.emit(itemQuotedStringEnd)
 	return lexSentence
 }
 

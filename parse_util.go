@@ -1,4 +1,4 @@
-package parse
+package main
 
 import (
 	"strconv"
@@ -89,6 +89,15 @@ func (p *Parser) mustParseColon() {
 	}
 }
 
+func (p *Parser) parseSemicolon() bool {
+	if it := p.next(); it.typ != itemSemicolon {
+		p.backup()
+		return false
+	}
+
+	return true
+}
+
 func (p *Parser) parseSentenceEnd() bool {
 	if it := p.next(); it.typ != itemSentenceEnd {
 		p.backup()
@@ -134,7 +143,10 @@ func (p *Parser) parseComment() Comment {
 		it := p.next()
 		if it.typ != itemComment {
 			p.backup()
-			return Comment(strings.Join(s, ". "))
+			return Comment{
+				Pos: it.pos, // TODO: should point to comment start instead
+				Str: strings.Join(s, ". "),
+			}
 		}
 
 		s = append(s, it.val)
@@ -186,4 +198,54 @@ func (p *Parser) mustParseTab() {
 	if it := p.next(); it.typ != itemTab {
 		p.errorf("expected tab, got %q", it.val)
 	}
+}
+
+func (p *Parser) parseQuotedString() (QuotedString, bool) {
+	it := p.next()
+	if it.typ != itemQuotedStringStart {
+		p.backup()
+		return QuotedString{}, false
+	}
+
+	q := QuotedString{
+		Pos: it.pos,
+	}
+
+	for {
+		if it := p.next(); it.typ == itemQuotedStringText {
+			q.Parts = append(q.Parts, it.val)
+		} else if it.typ == itemQuotedStringAction {
+			q.Parts = append(q.Parts, PhraseFuncCall{
+				Pos:  it.pos,
+				Func: it.val,
+			})
+		} else if it.typ == itemQuotedStringEnd {
+			break
+		} else {
+			p.errorf("bug: invalid item inside quoted string: %v", it)
+		}
+	}
+
+	return q, true
+}
+
+func (p *Parser) parseExprQuotedString() (String, bool) {
+	if it := p.next(); it.typ != itemQuotedStringStart {
+		p.backup()
+		return "", false
+	}
+
+	it := p.next()
+	if it.typ == itemQuotedStringEnd {
+		return "", true
+	}
+	if it.typ != itemQuotedStringText {
+		p.errorf("unexpected item inside quoted string: %v", it)
+	}
+
+	if it := p.next(); it.typ != itemQuotedStringEnd {
+		p.errorf("quoted string must be closed, got: %v", it)
+	}
+
+	return String(it.val), true
 }

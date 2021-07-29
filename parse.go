@@ -1,4 +1,4 @@
-package parse
+package main
 
 import (
 	"errors"
@@ -9,17 +9,16 @@ import (
 )
 
 type Parser struct {
-	name   string
-	s      []Sentence
+	s      []Sentence // result of Parse()
 	items  []item
 	iti    int // index of current item
 	err    error
-	indent int // current indent level when parsing raw phrases
+	indent int // current indent level when parsing phrases
+	pos    Pos // position of sentence start
 }
 
 func Parse(name string, input string) ([]Sentence, error) {
 	p := &Parser{
-		name:  name,
 		s:     make([]Sentence, 0, 100),
 		items: lex(name, input),
 		iti:   -1, // calling next() will point to first available item
@@ -47,6 +46,10 @@ func ParseFile(path string) ([]Sentence, error) {
 func (p *Parser) next() item {
 	for {
 		p.iti++
+		if p.iti > len(p.items)-1 {
+			// Only used for expression parser.
+			return item{typ: itemEOF}
+		}
 		it := p.items[p.iti]
 		if it.typ == itemError {
 			p.errorf("%s", it.val)
@@ -76,17 +79,17 @@ var errParse = errors.New("parser error")
 
 func (p *Parser) errorf(format string, args ...interface{}) {
 	it := p.items[p.iti]
-	p.err = fmt.Errorf("%s:%d: %w", p.name, it.pos.Line, fmt.Errorf(format, args...))
+	p.err = fmt.Errorf("%s:%d: %w", it.pos.Name, it.pos.Line, fmt.Errorf(format, args...))
 	panic(errParse)
 }
 
 func (p *Parser) parse() {
 	defer func() {
 		if r := recover(); r != nil {
-			panic(p.err)
-			/*if r != errParse {
+			if r != errParse {
 				panic(r)
-			}*/
+			}
+			panic(p.err)
 		}
 	}()
 
@@ -97,6 +100,14 @@ func (p *Parser) parse() {
 		} else if it.typ == itemComment || it.typ == itemSentenceEnd || it.typ == itemIndent || it.typ == itemNL {
 			// TODO: don't ignore comments
 			continue
+		} else if it.typ == itemQuotedStringStart {
+			p.backup()
+			q, ok := p.parseQuotedString()
+			if !ok {
+				panic("bug: parseQuotedString didn't parse itemQuotedStringStart")
+			}
+			p.s = append(p.s, q)
+			continue
 		}
 
 		s := p.parseSentence()
@@ -106,21 +117,18 @@ func (p *Parser) parse() {
 
 func (p *Parser) parseSentence() Sentence {
 	it := p.items[p.iti]
+	p.pos = it.pos
 	if it.typ != itemWord {
-		if it.typ == itemQuotedString {
-			return RoomDescr(it.val)
-		}
 		p.errorf("expected word, got %v", it.val)
 	}
 	switch {
 	case contains(it.val, "Volume", "Book", "Part", "Section", "Chapter"):
 		return p.parseSubheader()
 	case it.val == "Definition":
+		p.mustParseColon()
 		return p.parseDefinition()
 	case it.val == "To", it.val == "to":
 		return p.parseFunc()
-	case it.val == "For":
-		return p.parseRule("For")
 	case it.val == "Report":
 		return p.parseRule("Report")
 	case it.val == "Check", it.val == "check":
@@ -141,7 +149,7 @@ func (p *Parser) parseSentence() Sentence {
 		return p.parseRule("When play begins")
 	case it.val == "This":
 		p.mustParseWordOneOf("is")
-		return p.parseRule("This is")
+		return p.parseBareRule()
 	case it.val == "Table":
 		p.mustParseWordOneOf("of")
 		return p.parseTable()
@@ -168,6 +176,9 @@ func (p *Parser) parseSentence() Sentence {
 }
 
 func (p *Parser) parseSubheader() Sentence {
+	sh := Subheader{
+		Pos: p.pos,
+	}
 	p.backup()
 
 	acc := make([]string, 0, 3)
@@ -183,30 +194,26 @@ func (p *Parser) parseSubheader() Sentence {
 
 	p.mustParseSentenceEnd()
 
-	return Subheader(strings.Join(acc, " "))
+	sh.Str = strings.Join(acc, " ")
+	return sh
 }
 
 func (p *Parser) parseDefinition() Sentence {
-	p.mustParseColon()
-
-	var def Definition
+	def := Definition{
+		Pos: p.pos,
+	}
 	p.parseArticle()
 	def.Object = p.mustParseWordsUntil("is", "are")
 	def.Called = p.parseCalled()
 	p.mustParseWordOneOf("is", "are")
 	def.Prop = p.mustParseWordsUntil("if", "when")
-	if p.parseWordOneOf("if") {
-		def.rawCond = p.parseRawExpr()
-		return def
-	}
 	if p.parseWordOneOf("when") {
-		// TODO: differ between if and when
-		def.rawCond = p.parseRawExpr()
+		def.RawCond = p.parseRawExpr()
 	}
 
 	p.mustParseColon()
 	p.parseComment()
-	def.rawPhrases = p.parseRawPhrases()
+	def.RawPhrases = p.parseRawPhrases()
 	p.mustParseSentenceEnd()
 	return def
 }
@@ -226,11 +233,13 @@ func (p *Parser) parseCalled() string {
 
 func (p *Parser) parseFunc() Sentence {
 	// TODO: decide if, decide whether, say
-	var fn Func
+	fn := Func{
+		Pos: p.pos,
+	}
 	fn.Parts = p.parseFuncParts()
 	p.mustParseColon()
 	fn.Comment = p.parseComment()
-	fn.rawPhrases = p.parseRawPhrases()
+	fn.RawPhrases = p.parseRawPhrases()
 	p.mustParseSentenceEnd()
 	return fn
 }
@@ -261,29 +270,50 @@ func (p *Parser) parseFuncParts() []FuncPart {
 }
 
 func (p *Parser) parseRule(when string) Sentence {
-	var r Rule
-	r.Prefix = when
-	r.Rulebook = p.parseWordsUntil("when") // TODO: When play begins should be assigned here instead of prefix maybe
+	r := Rule{
+		Pos: p.pos,
+	}
+	r.Rulebook = when
+	rb := p.parseWordsUntil("when")
+	if rb != "" {
+		r.Rulebook += " " + rb
+	}
 	if p.parseWordOneOf("when") {
-		r.rawCond = p.parseRawExpr()
+		r.RawCond = p.parseRawExpr()
 	}
 	if p.parseLeftParen() {
 		p.mustParseWordOneOf("this")
 		p.mustParseWordOneOf("is")
 		p.parseArticle()
-		r.Name = p.mustParseWordsUntil("rule") // TODO: except for warp portals rule
+		r.Name = p.mustParseWordsUntil("rule")
 		p.mustParseWordOneOf("rule")
 		p.mustParseRightParen()
 	}
 	p.mustParseColon()
 	r.Comment = p.parseComment()
-	r.rawPhrases = p.parseRawPhrases()
+	r.RawPhrases = p.parseRawPhrases()
+	p.mustParseSentenceEnd()
+	return r
+}
+
+func (p *Parser) parseBareRule() Sentence {
+	r := Rule{
+		Pos: p.pos,
+	}
+	p.parseArticle()
+	r.Name = p.mustParseWordsUntil("rule")
+	p.mustParseWordOneOf("rule")
+	p.mustParseColon()
+	r.Comment = p.parseComment()
+	r.RawPhrases = p.parseRawPhrases()
 	p.mustParseSentenceEnd()
 	return r
 }
 
 func (p *Parser) parseTable() Sentence {
-	var t Table
+	t := Table{
+		Pos: p.pos,
+	}
 	t.Name = p.mustParseWordsUntil()
 	if p.parseLeftParen() {
 		p.mustParseWordOneOf("continued")
@@ -315,15 +345,15 @@ func (p *Parser) parseTable() Sentence {
 			p.mustParseSentenceEnd()
 			return t
 		}
-		if p.parseComment() != "" {
+		if c := p.parseComment(); c.Str != "" {
 			p.mustParseSentenceEnd()
 			return t
 		}
-		row := make([]string, 0, len(t.ColNames))
+		row := make([]interface{}, 0, len(t.ColNames))
 		for i := 0; i < len(t.ColNames); i++ {
-			var v string
-			if p.peek().typ == itemQuotedString {
-				v = p.next().val
+			var v interface{}
+			if q, ok := p.parseQuotedString(); ok {
+				v = q
 			} else {
 				v = p.mustParseWordsUntil()
 			}
@@ -342,16 +372,18 @@ func (p *Parser) parseTable() Sentence {
 }
 
 func (p *Parser) parseFigure() Sentence {
-	var f Figure
+	f := Figure{
+		Pos: p.pos,
+	}
 	f.Name = p.mustParseWordsUntil("is")
 	p.mustParseWordOneOf("is")
 	p.mustParseWordOneOf("the")
 	p.mustParseWordOneOf("file")
-	it := p.next()
-	if it.typ != itemQuotedString {
-		p.errorf("expected path to file in quotes, got %v", it)
+	fp, ok := p.parseQuotedString()
+	if !ok {
+		p.errorf("expected path to file in quotes, got %v", p.peek())
 	}
-	f.FilePath = it.val
+	f.FilePath = fp
 	p.mustParseSentenceEnd()
 	return f
 }
@@ -361,24 +393,10 @@ func (p *Parser) parseRuleFor() Sentence {
 }
 
 func (p *Parser) parseUnderstand() Sentence {
-	for {
-		it := p.next()
-		if it.typ == itemSentenceEnd {
-			break
-		}
-	}
-
 	return Understand(p.parseUnknownSentence())
 }
 
 func (p *Parser) parseDoesThePlayerMean() Sentence {
-	for {
-		it := p.next()
-		if it.typ == itemSentenceEnd {
-			break
-		}
-	}
-
 	return DoesThePlayerMean(p.parseUnknownSentence())
 }
 
@@ -503,7 +521,8 @@ func (p *Parser) parseDecl() Sentence {
 		return s
 	}
 
-	panic(errs)
+	p.errorf("no matching rule found: %v", errs)
+	panic("unreachable")
 }
 
 func (p *Parser) declBackup(err *error) func() {
@@ -537,7 +556,7 @@ func (p *Parser) parseDeclRule() (s Sentence, err error) {
 	}
 	p.mustParseColon()
 	p.parseComment()
-	p.parseRawPhrases()
+	r.RawPhrases = p.parseRawPhrases()
 	p.mustParseSentenceEnd()
 	return r, nil
 }
@@ -600,8 +619,13 @@ func (p *Parser) parseDeclProp() (s Sentence, err error) {
 	pr.Object = p.mustParseWordsUntil("has", "have")
 	p.mustParseWordOneOf("has", "have")
 	p.parseArticle()
+	if p.parseWordOneOf("list") {
+		p.mustParseWordOneOf("of")
+		pr.Array = true
+	}
 	pr.Kind = p.mustParseWordsUntil("called")
 	if p.parseWordOneOf("called") {
+		p.parseArticle()
 		pr.Name = p.mustParseWordsUntil()
 	}
 	p.mustParseSentenceEnd()
@@ -644,8 +668,8 @@ func (p *Parser) parseDeclPropVal() (s Sentence, err error) {
 	p.mustParseWordOneOf("is")
 	v.Usually = p.parseWordOneOf("usually")
 	p.parseArticle()
-	if p.peek().typ == itemQuotedString {
-		v.Val = p.next().val
+	if val, ok := p.parseQuotedString(); ok {
+		v.Val = val
 	} else {
 		v.Val = p.mustParseWordsUntil()
 	}
@@ -708,7 +732,7 @@ func (p *Parser) parseDeclRelation() (s Sentence, err error) {
 	r.Kind2 = p.mustParseWordsUntil("when")
 	r.Object2 = p.parseCalled()
 	if p.parseWordOneOf("when") {
-		r.rawCond = p.parseRawExpr()
+		r.RawCond = p.parseRawExpr()
 	}
 	p.mustParseSentenceEnd()
 	return r, nil
@@ -728,7 +752,7 @@ func (p *Parser) parseDeclVector() (s Sentence, err error) {
 		part := p.mustParseWordsUntil()
 		v.Parts = append(v.Parts, part)
 		if p.parseLeftParen() {
-			p.mustParseWordsUntil() // without leading zeros
+			p.mustParseWordsUntil() // ignore "without leading zeros"
 			p.mustParseRightParen()
 		}
 		if !p.parseComma() {
@@ -773,8 +797,8 @@ func (p *Parser) parseDeclIs() (s Sentence, err error) {
 	var is Is
 	is.Object = p.mustParseWordsUntil("is", "are")
 	p.mustParseWordOneOf("is", "are")
-	if p.peek().typ == itemQuotedString {
-		is.Value = p.next().val
+	if val, ok := p.parseQuotedString(); ok {
+		is.Value = val
 		p.mustParseSentenceEnd()
 		return is, nil
 	}
@@ -790,7 +814,7 @@ func (p *Parser) parseDeclIs() (s Sentence, err error) {
 	p.parseArticle()
 	is.Value = p.mustParseWordsUntil("and")
 	if p.parseComma() || p.parseWordOneOf("and") {
-		is.EnumVal = append(is.EnumVal, is.Value)
+		is.EnumVal = append(is.EnumVal, is.Value.(string))
 		is.Value = ""
 		for {
 			v := p.mustParseWordsUntil("and")
@@ -819,130 +843,33 @@ func (p *Parser) parseUnknownSentence() string {
 	return s.String()
 }
 
-func (p *Parser) parseRawPhrases() []rawPhrase {
-	if it := p.peek(); it.typ == itemWord {
-		return []rawPhrase{p.parseRawPhrase()}
-	}
-
-	p.parseNL()
-	p.indent++
-	phs := make([]rawPhrase, 0, 3)
-	for {
-		if p.peek().typ == itemSentenceEnd {
-			break
-		}
-
-		in := p.parseIndent()
-		if in < p.indent {
-			p.backup()
-			break
-		} else if in > p.indent {
-			p.errorf("expected indent %v, got %v", p.indent, in)
-		}
-		ph := p.parseRawPhrase()
-		p.parseComment() /* TODO: assign comment to phrase */
-		p.parseNL()
-		phs = append(phs, ph)
-	}
-
-	if len(phs) == 0 {
-		p.errorf("expected at least 1 phrase")
-	}
-	p.indent--
-	return phs
-}
-
-func (p *Parser) parseRawPhrase() rawPhrase {
-	var ph rawPhrase
+func (p *Parser) parseRawPhrases() []item {
 	it := p.next()
-	ph.Pos = it.pos
-	if it.typ == itemComment {
-		ph.Comment = Comment(it.val)
-		return ph
-	}
-
 	start := p.iti
 	for {
-		switch it.typ {
-		case itemSemicolon:
-			ph.items = p.items[start:p.iti] /* TODO: fix index? */
-			return ph
-		case itemColon:
-			ph.items = p.items[start:p.iti]
-			ph.Comment = p.parseComment()
-			ph.children = p.parseRawPhrases()
-			return ph
-		case itemComma:
-			ph.items = p.items[start:p.iti]
-			ph.children = []rawPhrase{p.parseRawPhrase()}
-			return ph
-		case itemSentenceEnd:
+		if it.typ == itemSentenceEnd {
+			items := p.items[start:p.iti]
 			p.backup()
-			ph.items = p.items[start:p.iti]
-			return ph
+			return items
 		}
 		it = p.next()
 	}
 }
 
-func (p *Parser) parseRawExpr() rawExpr {
-	var ex rawExpr
+// TODO: avoid capturing rule name (check for left-paren, this, is)
+func (p *Parser) parseRawExpr() []item {
 	it := p.next()
-	ex.Pos = it.pos
-
-	// TODO: avoid capturing rule name (check for left-paren, this, is)
 	start := p.iti
 	for {
 		switch it.typ {
 		case itemWord, itemLeftParen, itemRightParen:
 		case itemColon, itemSentenceEnd:
+			items := p.items[start:p.iti]
 			p.backup()
-			ex.items = p.items[start:p.iti]
-			return ex
+			return items
+		default:
+			p.errorf("unknown item: %v", it)
 		}
 		it = p.next()
 	}
 }
-
-/*
-func (p *Parser) parsePhrase() Phrase {
-	switch it.val {
-	case "say":
-		it := p.next()
-		if it.typ != itemQuotedString {
-			p.errorf("say expects quoted string, got %v", it.val)
-		}
-		return PhraseSay(it.val)
-	// case "decide", "let", "do", "now":
-	case "if":
-		_ = p.parseExpr()
-		if p.parseComma() {
-			_ = p.parsePhrase()
-			return nil
-		}
-		p.mustParseColon()
-		_ = p.parseRawPhrases()
-	case "otherwise":
-		if it := p.peek(); it.typ == itemWord && it.val == "if" {
-			p.next()
-			_ = p.parseExpr()
-		}
-		p.mustParseColon()
-		_ = p.parseRawPhrases()
-	case "unless":
-		_ = p.parseExpr()
-		p.mustParseColon()
-		_ = p.parseRawPhrases()
-	case "repeat":
-		_ = p.parseExpr()
-		p.mustParseColon()
-		_ = p.parseRawPhrases()
-	case "while":
-		_ = p.parseExpr()
-		p.mustParseColon()
-		_ = p.parseRawPhrases()
-	}
-
-	return nil
-}
-*/

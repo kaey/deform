@@ -1,14 +1,12 @@
-package parse_test
+package main
 
 import (
 	"testing"
-
-	"github.com/kaey/deform/parse"
 )
 
 func TestSimple(t *testing.T) {
 	for _, f := range files {
-		_, err := parse.ParseFile(f)
+		_, err := ParseFile(f)
 		if err != nil {
 			t.Fatal(err)
 		}
