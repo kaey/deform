@@ -41,6 +41,10 @@ type Pos struct {
 	Line int
 }
 
+func (p Pos) String() string {
+	return fmt.Sprintf("%s:%d", p.Name, p.Line)
+}
+
 const eof = -1
 
 type stateFn func(*lexer) stateFn
@@ -173,6 +177,11 @@ func lexQuotedString(l *lexer) stateFn {
 	l.emit(itemQuotedStringStart)
 	for {
 		if r := l.next(); r == '"' {
+			l.backup()
+			if l.pos.Pos > l.start.Pos {
+				l.emit(itemQuotedStringText)
+			}
+			l.next()
 			break
 		} else if r == ']' {
 			return l.errorf("closing bracket ] without matching opening bracket [")

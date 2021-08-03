@@ -5,11 +5,20 @@ import (
 	"io"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 
 	"golang.org/x/term"
 )
+
+var logfile *os.File
+
+func init() {
+	f, err := os.Create("log.txt")
+	if err != nil {
+		panic(err)
+	}
+	logfile = f
+}
 
 func main() {
 	if err := Main(); err != nil {
@@ -65,7 +74,7 @@ func Main() error {
 		}
 	}*/
 
-	for rb, rules := range terp.tmp.Rulebooks {
+	/*for rb, rules := range terp.tmp.Rulebooks {
 		nrules := terp.Rulebooks[rb]
 		for _, r := range rules {
 			nr := PRule{
@@ -76,7 +85,7 @@ func Main() error {
 				return err
 			}
 			nr.Cond = e
-			phs, err := ParsePhrases(r.RawPhrases)
+			phs, err := ParsePhrases(r.RawPhrases, nil)
 			if err != nil {
 				return err
 			}
@@ -84,7 +93,7 @@ func Main() error {
 			nrules = append(nrules, nr)
 		}
 		terp.Rulebooks[rb] = nrules
-	}
+	}*/
 
 	for {
 		line, err := tty.ReadLine()
@@ -139,11 +148,16 @@ func Main() error {
 				fmt.Fprintf(tty, "%v -> %v\n", k, v)
 			}
 		case "e", "eval":
-			e, err := ParseExpr(lex("tty", line), nil)
+			e, err := ParseExpr(lex("tty", line), terp.dict)
 			if err != nil {
 				fmt.Fprintf(tty, "err: %v\n", err)
+				continue
 			}
-			fmt.Fprintf(tty, "%+#v\n", EvalExpr(e))
+			r := terp.EvalExpr(e)
+			if r != nil {
+				fmt.Fprintf(tty, "%+#v", r)
+			}
+			fmt.Fprintf(tty, "\n")
 		case "go":
 			// run When play begins
 		}
@@ -155,7 +169,9 @@ type Interp struct {
 	tmp  *interpTmp
 	dict *Dict
 
-	Vars      map[string]PVar
+	rng       uint64
+	Funcs     []PFunc
+	Vars      []PVar
 	Tables    map[string]PTable
 	Rulebooks map[string][]PRule
 	Actions   map[string]Action
@@ -177,8 +193,7 @@ func newInterp(tty *term.Terminal) *Interp {
 			Defs:      make([]Definition, 0, 100),
 			Rulebooks: make(map[string][]Rule, 100),
 		},
-		dict:      &Dict{m: new(mnode)},
-		Vars:      make(map[string]PVar, 100),
+		dict:      new(Dict), // TODO: dict should only be used during parsing
 		Tables:    make(map[string]PTable, 100),
 		Rulebooks: make(map[string][]PRule, 100),
 		Actions:   make(map[string]Action, 100),
@@ -186,24 +201,9 @@ func newInterp(tty *term.Terminal) *Interp {
 		Verbs:     make(map[string]string, 100),
 	}
 
-	terp.Vars["maximum score"] = PVar{Kind: "number"}
-	terp.Kinds["object"] = Kind{}
-	terp.Kinds["direction"] = Kind{Kind: "object"}
-	terp.Kinds["room"] = Kind{Kind: "object"}
-	terp.Kinds["region"] = Kind{Kind: "object"}
-	terp.Kinds["thing"] = Kind{Kind: "object"}
-	terp.Kinds["door"] = Kind{Kind: "thing"}
-	terp.Kinds["container"] = Kind{Kind: "thing"}
-	terp.Kinds["player's holdall"] = Kind{Kind: "container"}
-	terp.Kinds["supporter"] = Kind{Kind: "thing"}
-	terp.Kinds["backdrop"] = Kind{Kind: "thing"}
-	terp.Kinds["device"] = Kind{Kind: "thing"}
-	terp.Kinds["person"] = Kind{Kind: "thing"}
-	terp.Kinds["man"] = Kind{Kind: "person"}
-	terp.Kinds["woman"] = Kind{Kind: "person"}
-	terp.Kinds["animal"] = Kind{Kind: "person"}
-
-	terp.dict.AddStub("clear the screen")
+	terp.initBuiltinVars()
+	terp.initBuiltinKinds()
+	terp.initBuiltinFuncs()
 
 	return terp
 }
@@ -235,23 +235,23 @@ func (terp *Interp) evalSentence(s Sentence) {
 		}
 		terp.Tables[name] = t
 	case Variable:
-		name := strings.ToLower(v.Name)
-		if _, exists := terp.Vars[name]; exists {
+		//name := strings.ToLower(v.Name)
+		/*if _, exists := terp.Vars[name]; exists {
 			panic(fmt.Sprintf("var exists: %v", v.Name))
 		}
 		terp.Vars[name] = PVar{
 			Pos:   v.Pos,
 			Kind:  strings.ToLower(v.Kind),
 			Array: v.Array,
-		}
+		}*/
 	case Is:
 		name := strings.ToLower(v.Object)
-		if _, exists := terp.Vars[name]; exists {
+		/*if _, exists := terp.Vars[name]; exists {
 			vv := terp.Vars[name]
 			vv.Val = v.Value
 			terp.Vars[name] = vv
 			return
-		}
+		}*/
 
 		if v.Value == "rulebook" {
 			if _, exists := terp.Rulebooks[name]; exists {
@@ -305,123 +305,57 @@ func (terp *Interp) evalSentence(s Sentence) {
 	}
 }
 
-func (terp *Interp) match(v string) interface{} {
-	parts := strings.Split(v, " ")
-	c := terp.dict.m
-	for _, p := range parts {
-		c = c.getNode(p)
-		if c == nil {
-			panic("match fail")
-		}
-	}
-
-	return c.target
-}
-
-func (terp *Interp) call() {
-}
-
-type PVar struct {
-	Pos   Pos
-	Val   interface{}
-	Kind  string
-	ValA  []string
-	Array bool
-}
-
-type PTable struct {
-	Pos   Pos
-	Kinds map[string]string
-	Rows  []map[string]interface{}
-}
-
-type PRule struct {
-	Pos     Pos
-	Cond    *Expr
-	Phrases []Phrase
-}
-
-type PDefinition struct {
-	Pos     Pos
-	Expr    Expr
-	Phrases []Phrase
-}
-
-type PDict struct{}
-
-type PStubFunc struct{}
-
-func EvalExpr(e *Expr) interface{} {
+func (terp *Interp) EvalExpr(e interface{}) interface{} {
 	if e == nil {
-		return true
+		return nil
 	}
 
-	return evalExpr(*e)
-}
-
-func evalExpr(e Expr) interface{} {
-	// TODO: unary op
-	v := evalExprE(e.E)
-	for _, p := range e.Rest {
-		v2 := evalExpr(p.Expr)
-		v = evalExprOp(v, p.Op, v2)
-	}
-	return v
-}
-
-func evalExprE(e interface{}) interface{} {
-	switch ee := e.(type) {
+	switch e := e.(type) {
+	case PFuncCall:
+		if e.Func.NativeFn != nil {
+			return e.Func.NativeFn(e.Args)
+		}
+		return nil
+	case *PVar:
+		if e.Array {
+			return e.ValA
+		}
+		return e.Val
+	case PExprOp:
+		a := terp.EvalExpr(e.Left).(int)
+		b := terp.EvalExpr(e.Right).(int)
+		var r interface{}
+		switch e.Op {
+		case '+':
+			r = a + b
+		case '-':
+			r = a - b
+		case '*':
+			r = a * b
+		case '/':
+			r = a / b
+		case '>':
+			r = a > b
+		case '<':
+			r = a < b
+		}
+		return r
+	case PQuotedString:
+		buf := new(strings.Builder)
+		buf.Grow(20)
+		for _, a := range e.Parts {
+			fmt.Fprint(buf, terp.EvalExpr(a))
+		}
+		return buf.String()
 	case string:
-		// TODO: variables, props etc
-		n, err := strconv.Atoi(ee)
-		if err == nil {
-			return n
-		}
-		return ee
-	case Expr:
-		return evalExpr(ee)
+		return e
+	case int:
+		return e
+	case float64:
+		return e
+	case bool:
+		return e
 	}
 
-	panic(fmt.Sprintf("bug: unknown expr type: %T", e))
-}
-
-func evalExprOp(v1 interface{}, op Op, v2 interface{}) interface{} {
-	switch op {
-	case '+':
-		switch v1.(type) {
-		case int:
-			return v1.(int) + v2.(int)
-		}
-	case '-':
-		switch v1.(type) {
-		case int:
-			return v1.(int) - v2.(int)
-		}
-	case '*':
-		switch v1.(type) {
-		case int:
-			return v1.(int) * v2.(int)
-		}
-	case '/':
-		switch v1.(type) {
-		case int:
-			return v1.(int) / v2.(int)
-		}
-	case '=':
-		switch v1.(type) {
-		case int:
-			return v1.(int) == v2.(int)
-		}
-	case '&':
-		switch v1.(type) {
-		case int:
-			return v1.(int) == v2.(int)
-		}
-	case '|':
-		switch v1.(type) {
-		case int:
-			return v1.(int) > 0 || v2.(int) > 0
-		}
-	}
-	panic(fmt.Sprintf("bug: unknown expr: v1=%v, op=%c, v2=%v", v1, op, v2))
+	panic("bug: unhandled expr type")
 }

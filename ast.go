@@ -9,8 +9,10 @@ type Comment struct {
 
 type QuotedString struct {
 	Pos   Pos
-	Parts []interface{} // contains string or PhraseFuncCall
+	Parts []interface{} // contains string or RawFuncCall
 }
+
+type RawFuncCall string
 
 type Subheader struct {
 	Pos Pos
@@ -173,76 +175,4 @@ type IsIn struct {
 	Pos     Pos
 	Objects []string
 	Where   string
-}
-
-type Expr struct {
-	Unary Op
-	E     interface{}
-	Rest  []ExprPart
-}
-
-type ExprPart struct {
-	Op   Op
-	Expr Expr
-}
-
-type Op byte
-
-type Ident string
-
-type Number int
-
-type String string
-
-type Phrase interface{}
-
-type PhraseNow struct {
-	Pos    Pos
-	Object string
-	Expr   Expr
-}
-
-type PhraseListAdd struct {
-	Pos   Pos
-	Value interface{}
-	List  string
-}
-
-type PhraseLet struct {
-	Pos    Pos
-	Object string
-	Value  string
-}
-
-type PhraseWhile struct {
-	Pos     Pos
-	Expr    Expr
-	Phrases []Phrase
-}
-
-type PhraseIf struct {
-	Pos     Pos
-	Expr    Expr
-	Phrases []Phrase
-}
-
-type PhraseOtherwiseIf struct {
-	Pos     Pos
-	Expr    Expr
-	Phrases []Phrase
-}
-
-type PhraseSay struct {
-	Pos Pos
-	Say interface{} // contains QuotedString or PhraseFuncCall
-}
-
-type PhraseDecide struct {
-	Pos    Pos
-	Result string
-}
-
-type PhraseFuncCall struct {
-	Pos  Pos
-	Func string
 }

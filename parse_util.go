@@ -215,10 +215,7 @@ func (p *Parser) parseQuotedString() (QuotedString, bool) {
 		if it := p.next(); it.typ == itemQuotedStringText {
 			q.Parts = append(q.Parts, it.val)
 		} else if it.typ == itemQuotedStringAction {
-			q.Parts = append(q.Parts, PhraseFuncCall{
-				Pos:  it.pos,
-				Func: it.val,
-			})
+			q.Parts = append(q.Parts, RawFuncCall(strings.Trim(it.val, "[]")))
 		} else if it.typ == itemQuotedStringEnd {
 			break
 		} else {
@@ -227,25 +224,4 @@ func (p *Parser) parseQuotedString() (QuotedString, bool) {
 	}
 
 	return q, true
-}
-
-func (p *Parser) parseExprQuotedString() (String, bool) {
-	if it := p.next(); it.typ != itemQuotedStringStart {
-		p.backup()
-		return "", false
-	}
-
-	it := p.next()
-	if it.typ == itemQuotedStringEnd {
-		return "", true
-	}
-	if it.typ != itemQuotedStringText {
-		p.errorf("unexpected item inside quoted string: %v", it)
-	}
-
-	if it := p.next(); it.typ != itemQuotedStringEnd {
-		p.errorf("quoted string must be closed, got: %v", it)
-	}
-
-	return String(it.val), true
 }

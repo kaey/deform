@@ -1,13 +1,10 @@
 package main
 
-import (
-	"strings"
-)
-
-func ParsePhrases(items []item) ([]Phrase, error) {
+func ParsePhrases(items []item, dict *Dict) ([]Phrase, error) {
 	p := &Parser{
 		items: items,
 		iti:   -1, // calling next() will point to first available item
+		dict:  dict,
 	}
 
 	defer func() {
@@ -33,7 +30,7 @@ func (p *Parser) parsePhrases() []Phrase {
 	p.indent++
 	phs := make([]Phrase, 0, 3)
 	for {
-		if p.peek().typ == itemSentenceEnd {
+		if it := p.peek(); it.typ == itemSentenceEnd || it.typ == itemEOF {
 			break
 		}
 		in := p.parseIndent()
@@ -60,53 +57,22 @@ func (p *Parser) parsePhrases() []Phrase {
 }
 
 func (p *Parser) parsePhrase() Phrase {
-	it := p.next()
-	if it.typ == itemComment {
-		p.backup()
+	if p.peek().typ == itemComment {
 		return p.parseComment()
 	}
 
-	switch it.val {
-	case "now":
-		ph := PhraseNow{
-			Pos: it.pos,
-		}
-		p.parseArticle()
-		ph.Object = p.mustParseWordsUntil("is")
-		p.mustParseWordOneOf("is")
-		ph.Expr = p.parseExpr()
-		return ph
-	case "add":
-		ph := PhraseListAdd{
-			Pos: it.pos,
-		}
-		if s, ok := p.parseExprQuotedString(); ok {
-			ph.Value = s
-		} else {
-			ph.Value = Ident(p.mustParseWordsUntil("to"))
-		}
-
-		p.mustParseWordOneOf("to")
-		p.parseArticle()
-		ph.List = p.mustParseWordsUntil()
-		return ph
-	case "let":
-		ph := PhraseLet{
-			Pos: it.pos,
-		}
-		ph.Object = p.mustParseWordsUntil("be")
-		p.mustParseWordOneOf("be")
-		ph.Value = p.mustParseWordsUntil()
-		return ph
+	switch p.peek().val {
 	case "while":
+		it := p.next()
 		ph := PhraseWhile{
 			Pos: it.pos,
 		}
-		ph.Expr = p.parseExpr()
+		ph.Expr = p.parsePhraseFuncCall()
 		p.mustParseColon()
 		ph.Phrases = p.parsePhrases()
 		return ph
 	case "if":
+		it := p.next()
 		ph := PhraseIf{
 			Pos: it.pos,
 		}
@@ -119,6 +85,7 @@ func (p *Parser) parsePhrase() Phrase {
 		ph.Phrases = p.parsePhrases()
 		return ph
 	case "otherwise":
+		it := p.next()
 		ph := PhraseOtherwiseIf{
 			Pos: it.pos,
 		}
@@ -132,15 +99,52 @@ func (p *Parser) parsePhrase() Phrase {
 		p.mustParseColon()
 		ph.Phrases = p.parsePhrases()
 		return ph
-	case "say":
-		return p.parsePhraseSay()
 	}
-	// TODO: decide, decide on
 
 	return p.parsePhraseFuncCall()
+	/*
+		switch it.val {
+		case "now":
+			ph := PhraseNow{
+				Pos: it.pos,
+			}
+			p.parseArticle()
+			ph.Object = p.mustParseWordsUntil("is")
+			p.mustParseWordOneOf("is")
+			ph.Expr = p.parseExpr()
+			return ph
+		case "add":
+			ph := PhraseListAdd{
+				Pos: it.pos,
+			}
+			if s, ok := p.parseQuotedString(); ok {
+				ph.Value = s
+			} else {
+				ph.Value = Ident(p.mustParseWordsUntil("to"))
+			}
+
+			p.mustParseWordOneOf("to")
+			p.parseArticle()
+			ph.List = p.mustParseWordsUntil()
+			return ph
+		case "let":
+			ph := PhraseLet{
+				Pos: it.pos,
+			}
+			ph.Object = p.mustParseWordsUntil("be")
+			p.mustParseWordOneOf("be")
+			ph.Value = p.parseExpr()
+			return ph
+
+		case "say":
+			return p.parsePhraseSay()
+		}
+		// TODO: decide, decide on
+
+		return p.parsePhraseFuncCall()*/
 }
 
-func (p *Parser) parsePhraseSay() PhraseSay {
+/*func (p *Parser) parsePhraseSay() PhraseSay {
 	ph := PhraseSay{
 		Pos: p.items[p.iti].pos,
 	}
@@ -152,24 +156,12 @@ func (p *Parser) parsePhraseSay() PhraseSay {
 
 	ph.Say = p.parsePhraseFuncCall()
 	return ph
-}
+}*/
 
-func (p *Parser) parsePhraseFuncCall() PhraseFuncCall {
-	it := p.items[p.iti]
-	ph := PhraseFuncCall{
-		Pos: it.pos,
+func (p *Parser) parsePhraseFuncCall() Phrase {
+	pos := p.peek().pos
+	return PhraseFuncCall{
+		Pos:  pos,
+		Func: p.parseExpr(),
 	}
-
-	parts := []string{it.val}
-	for {
-		it = p.next()
-		if it.typ != itemWord {
-			p.backup()
-			break
-		}
-		parts = append(parts, it.val)
-	}
-
-	ph.Func = strings.Join(parts, " ")
-	return ph
 }

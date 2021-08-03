@@ -3,48 +3,59 @@ package main
 import "strings"
 
 type Dict struct {
-	m *mnode
+	rows []mrow
+}
+
+type mrow struct {
+	target interface{}
+	n      []mnode
 }
 
 type mnode struct {
-	match    string
-	mkind    bool
-	target   interface{}
-	children []*mnode
+	match string
+	kind  bool
 }
 
-func (m *mnode) addNode(match string, mkind bool) *mnode {
-	for _, c := range m.children {
-		if c.match == match && c.mkind == mkind {
-			return c
-		}
-	}
-
-	c := &mnode{
-		match: match,
-		mkind: mkind,
-	}
-	m.children = append(m.children, c)
-	return c
-}
-
-func (m *mnode) getNode(match string) *mnode {
-	for _, c := range m.children {
-		if c.match == match { // TODO: match kind
-			return c
-		}
-	}
-
-	return nil
-}
-
-func (d *Dict) AddStub(v string) {
+func (d *Dict) AddFuncStub(v string) {
 	parts := strings.Split(v, " ")
-	c := d.m
-	for _, p := range parts {
-		c = c.addNode(p, false)
+	n := make([]mnode, len(parts))
+	for i, p := range parts {
+		n[i] = mnode{match: p}
 	}
+
+	d.rows = append(d.rows, mrow{
+		target: &PFunc{Name: v},
+		n:      n,
+	})
 }
 
-func (d *Dict) AddFunc(target interface{}, v []FuncPart) {
+func (d *Dict) AddFunc(target interface{}, parts []FuncPart) {
+	n := make([]mnode, len(parts))
+	for i, p := range parts {
+		if p.Word != "" {
+			n[i] = mnode{match: p.Word}
+		} else {
+			n[i] = mnode{match: p.ArgKind, kind: true}
+		}
+	}
+
+	d.rows = append(d.rows, mrow{
+		target: target,
+		n:      n,
+	})
 }
+
+func (d *Dict) Add(target interface{}, v string) {
+	parts := strings.Split(v, " ")
+	n := make([]mnode, len(parts))
+	for i, p := range parts {
+		n[i] = mnode{match: p}
+	}
+
+	d.rows = append(d.rows, mrow{
+		target: target,
+		n:      n,
+	})
+}
+
+// TODO: sort

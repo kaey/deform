@@ -9,12 +9,14 @@ import (
 )
 
 type Parser struct {
-	s      []Sentence // result of Parse()
-	items  []item
-	iti    int // index of current item
-	err    error
+	s     []Sentence // result of Parse()
+	items []item
+	iti   int // index of current item
+	err   error
+	pos   Pos // position of sentence start
+
 	indent int // current indent level when parsing phrases
-	pos    Pos // position of sentence start
+	dict   *Dict
 }
 
 func Parse(name string, input string) ([]Sentence, error) {
