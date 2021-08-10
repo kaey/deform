@@ -59,7 +59,7 @@ type Table struct {
 	ColNames    []string
 	ColKinds    []string
 	RowComments []Comment
-	Rows        [][]interface{} // contains string or QuotedString
+	Rows        [][]interface{} // int, string or QuotedString
 }
 
 type Figure struct {
@@ -91,6 +91,7 @@ type ListedInRulebook struct {
 	Last     bool
 }
 
+// [Name] is a [list of] [Kind] that varies.
 type Variable struct {
 	Pos   Pos
 	Name  string
@@ -98,12 +99,14 @@ type Variable struct {
 	Array bool
 }
 
+// A [Name] is a kind of [Kind].
 type Kind struct {
 	Pos  Pos
 	Name string
 	Kind string
 }
 
+// [Object] has a [Kind] called [Name].
 type Prop struct {
 	Pos    Pos
 	Object string
@@ -119,14 +122,16 @@ type Action struct {
 	Touchable bool
 }
 
+// [Prop] of [Object] is [usually] [Val].
 type PropVal struct {
 	Pos     Pos
 	Prop    string
 	Object  string
-	Val     interface{} // string or QuotedString
+	Val     interface{} // int, string or QuotedString
 	Usually bool
 }
 
+// [Object] can be [Vals] (this is the [Name] property).
 type PropEnum struct {
 	Pos    Pos
 	Object string
@@ -147,10 +152,11 @@ type Relation struct {
 }
 
 type Verb struct {
-	Pos  Pos
-	Name string
-	Alts []string // alternative verb forms
-	Rel  string
+	Pos      Pos
+	Name     string
+	Alts     []string // alternative verb forms
+	Reversed bool
+	Rel      string
 }
 
 type Vector struct {
@@ -160,19 +166,25 @@ type Vector struct {
 	Parts   []string
 }
 
+// [Article] [Object] is [Direction] [usually|initially|always|never] [Value].
 type Is struct {
 	Pos       Pos
+	Article   string
 	Object    string
-	Value     interface{} // string or QuotedString
+	Value     interface{} // bool, int, string or QuotedString
 	EnumVal   []string
 	Direction string // for rooms only
 	Usually   bool
 	Initially bool
+	Always    bool
+	Never     bool
 	Negate    bool
 }
 
+// [N] [Objects] is in [Where].
 type IsIn struct {
 	Pos     Pos
 	Objects []string
 	Where   string
+	Decl    bool // Implicit declaration of N objects.
 }

@@ -144,7 +144,7 @@ func (p *Parser) parseComment() Comment {
 		if it.typ != itemComment {
 			p.backup()
 			return Comment{
-				Pos: it.pos, // TODO: should point to comment start instead
+				Pos: it.pos,
 				Str: strings.Join(s, ". "),
 			}
 		}

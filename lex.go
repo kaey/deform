@@ -42,6 +42,9 @@ type Pos struct {
 }
 
 func (p Pos) String() string {
+	if p.Line == 0 {
+		return ""
+	}
 	return fmt.Sprintf("%s:%d", p.Name, p.Line)
 }
 

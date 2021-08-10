@@ -1,40 +1,24 @@
 package main
 
-type PVar struct {
-	Pos   Pos
-	Name  string
-	Val   interface{}
-	Kind  string
-	ValA  []string
-	Array bool
-}
-
+// TODO
 type PTable struct {
 	Pos   Pos
 	Kinds map[string]string
 	Rows  []map[string]interface{}
 }
 
+// TODO
 type PRule struct {
 	Pos     Pos
 	Cond    interface{}
 	Phrases []Phrase
 }
 
+// TODO
 type PDefinition struct {
 	Pos     Pos
 	Expr    interface{}
 	Phrases []Phrase
-}
-
-type PFunc struct {
-	Name     string
-	NativeFn func([]interface{}) interface{}
-}
-
-type PFuncCall struct {
-	Func *PFunc
-	Args []interface{}
 }
 
 type PExprOp struct {
@@ -46,8 +30,6 @@ type PExprOp struct {
 type PQuotedString struct {
 	Parts []interface{}
 }
-
-type PObject struct{}
 
 type Phrase interface{}
 

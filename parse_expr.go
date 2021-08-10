@@ -2,6 +2,7 @@ package main
 
 import (
 	"strconv"
+	"strings"
 )
 
 func ParseExpr(items []item, dict *Dict) (e interface{}, err error) {
@@ -102,12 +103,13 @@ func (p *Parser) parseExprRow(row mrow) (interface{}, bool) {
 			if !isfn {
 				p.errorf("match for kind in non-function")
 			}
+			// TODO: add flag to avoid parsing < and >.
 			arg := p.parseExpr() // TODO: check kind
 			fne.Args = append(fne.Args, arg)
 			continue
 		}
 
-		if w, ok := p.parseWord(); !ok || n.match != w {
+		if w, ok := p.parseWord(); !ok || !strings.EqualFold(n.match, w) {
 			return nil, false
 		}
 	}

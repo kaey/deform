@@ -3,8 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -31,18 +31,12 @@ func Parse(name string, input string) ([]Sentence, error) {
 }
 
 func ParseFile(path string) ([]Sentence, error) {
-	f, err := os.Open(path)
+	f, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
 
-	input := new(strings.Builder)
-	if _, err := io.Copy(input, f); err != nil {
-		return nil, err
-	}
-
-	return Parse(path, input.String())
+	return Parse(path, string(f))
 }
 
 func (p *Parser) next() item {
@@ -99,8 +93,12 @@ func (p *Parser) parse() {
 		it := p.next()
 		if it.typ == itemEOF {
 			return
-		} else if it.typ == itemComment || it.typ == itemSentenceEnd || it.typ == itemIndent || it.typ == itemNL {
-			// TODO: don't ignore comments
+		} else if it.typ == itemComment {
+			p.backup()
+			c := p.parseComment()
+			p.s = append(p.s, c)
+			continue
+		} else if it.typ == itemSentenceEnd || it.typ == itemIndent || it.typ == itemNL {
 			continue
 		} else if it.typ == itemQuotedStringStart {
 			p.backup()
@@ -209,6 +207,11 @@ func (p *Parser) parseDefinition() Sentence {
 	def.Called = p.parseCalled()
 	p.mustParseWordOneOf("is", "are")
 	def.Prop = p.mustParseWordsUntil("if", "when")
+	if p.parseWordOneOf("if") {
+		def.RawPhrases = p.parseRawPhrases()
+		p.mustParseSentenceEnd()
+		return def
+	}
 	if p.parseWordOneOf("when") {
 		def.RawCond = p.parseRawExpr()
 	}
@@ -234,7 +237,7 @@ func (p *Parser) parseCalled() string {
 }
 
 func (p *Parser) parseFunc() Sentence {
-	// TODO: decide if, decide whether, say
+	// TODO: decide if, decide whether, decide which kind is, say XXX
 	fn := Func{
 		Pos: p.pos,
 	}
@@ -357,7 +360,11 @@ func (p *Parser) parseTable() Sentence {
 			if q, ok := p.parseQuotedString(); ok {
 				v = q
 			} else {
-				v = p.mustParseWordsUntil()
+				w := p.mustParseWordsUntil()
+				v = w
+				if n, err := strconv.Atoi(w); err == nil {
+					v = n
+				}
 			}
 			row = append(row, v)
 			if i < len(t.ColNames)-1 {
@@ -403,7 +410,9 @@ func (p *Parser) parseDoesThePlayerMean() Sentence {
 }
 
 func (p *Parser) parseThereAre() Sentence {
-	var t ThereAre
+	t := ThereAre{
+		Pos: p.pos,
+	}
 	n, ok := p.parseNumber()
 	if !ok {
 		p.parseArticle()
@@ -416,8 +425,10 @@ func (p *Parser) parseThereAre() Sentence {
 }
 
 func (p *Parser) parseVerb() Sentence {
-	var v Verb
-	v.Name = p.mustParseWordsUntil()
+	v := Verb{
+		Pos: p.pos,
+	}
+	v.Name = p.mustParseWordsUntil("implies", "means")
 	if p.parseLeftParen() {
 		for {
 			p.mustParseWord() // just skip first word
@@ -429,8 +440,9 @@ func (p *Parser) parseVerb() Sentence {
 		}
 		p.mustParseRightParen()
 	}
-	p.mustParseWordOneOf("implies")
+	p.mustParseWordOneOf("implies", "means")
 	p.parseArticle()
+	v.Reversed = p.parseWordOneOf("reversed")
 	v.Rel = p.mustParseWordsUntil("relation")
 	p.mustParseWordOneOf("relation")
 	p.mustParseSentenceEnd()
@@ -438,7 +450,7 @@ func (p *Parser) parseVerb() Sentence {
 }
 
 func (p *Parser) parseDecl() Sentence {
-	p.parseArticleCapital()
+	article := p.parseArticleCapital()
 	if p.parseWordOneOf("File") {
 		p.mustParseWordOneOf("of")
 		return FileOf(p.parseUnknownSentence())
@@ -487,10 +499,12 @@ func (p *Parser) parseDecl() Sentence {
 		return s
 	}
 
-	if s, err := p.parseDeclPropVal(); err != nil {
-		errs = append(errs, err)
-	} else {
-		return s
+	if strings.EqualFold(article, "the") {
+		if s, err := p.parseDeclPropVal(); err != nil {
+			errs = append(errs, err)
+		} else {
+			return s
+		}
 	}
 
 	if s, err := p.parseDeclPropEnum(); err != nil {
@@ -517,7 +531,7 @@ func (p *Parser) parseDecl() Sentence {
 		return s
 	}
 
-	if s, err := p.parseDeclIs(); err != nil {
+	if s, err := p.parseDeclIs(article); err != nil {
 		errs = append(errs, err)
 	} else {
 		return s
@@ -545,7 +559,9 @@ func (p *Parser) declBackup(err *error) func() {
 func (p *Parser) parseDeclRule() (s Sentence, err error) {
 	defer p.declBackup(&err)()
 
-	var r Rule
+	r := Rule{
+		Pos: p.pos,
+	}
 	r.Rulebook = p.mustParseWordsUntil("rule")
 	p.mustParseWordOneOf("rule")
 	if p.parseLeftParen() {
@@ -566,7 +582,9 @@ func (p *Parser) parseDeclRule() (s Sentence, err error) {
 func (p *Parser) parseDeclListedInRulebook() (s Sentence, err error) {
 	defer p.declBackup(&err)()
 
-	var l ListedInRulebook
+	l := ListedInRulebook{
+		Pos: p.pos,
+	}
 	l.Rule = p.mustParseWordsUntil("rule")
 	p.mustParseWordOneOf("rule")
 	p.mustParseWordOneOf("is")
@@ -584,7 +602,9 @@ func (p *Parser) parseDeclListedInRulebook() (s Sentence, err error) {
 func (p *Parser) parseDeclVariable() (s Sentence, err error) {
 	defer p.declBackup(&err)()
 
-	var v Variable
+	v := Variable{
+		Pos: p.pos,
+	}
 	v.Name = p.mustParseWordsUntil("is")
 	p.mustParseWordOneOf("is")
 	p.parseArticle()
@@ -603,7 +623,9 @@ func (p *Parser) parseDeclVariable() (s Sentence, err error) {
 func (p *Parser) parseDeclKind() (s Sentence, err error) {
 	defer p.declBackup(&err)()
 
-	var k Kind
+	k := Kind{
+		Pos: p.pos,
+	}
 	k.Name = p.mustParseWordsUntil("is", "are")
 	p.mustParseWordOneOf("is", "are")
 	p.mustParseWordOneOf("a")
@@ -617,7 +639,9 @@ func (p *Parser) parseDeclKind() (s Sentence, err error) {
 func (p *Parser) parseDeclProp() (s Sentence, err error) {
 	defer p.declBackup(&err)()
 
-	var pr Prop
+	pr := Prop{
+		Pos: p.pos,
+	}
 	pr.Object = p.mustParseWordsUntil("has", "have")
 	p.mustParseWordOneOf("has", "have")
 	p.parseArticle()
@@ -637,7 +661,9 @@ func (p *Parser) parseDeclProp() (s Sentence, err error) {
 func (p *Parser) parseDeclAction() (s Sentence, err error) {
 	defer p.declBackup(&err)()
 
-	var a Action
+	a := Action{
+		Pos: p.pos,
+	}
 	a.Name = p.mustParseWordsUntil("is")
 	p.mustParseWordOneOf("is")
 	p.mustParseWordOneOf("an")
@@ -660,9 +686,10 @@ func (p *Parser) parseDeclAction() (s Sentence, err error) {
 
 func (p *Parser) parseDeclPropVal() (s Sentence, err error) {
 	defer p.declBackup(&err)()
-	// TODO: pack of cards, chest of drawers, belt of sturdiness etc
 
-	var v PropVal
+	v := PropVal{
+		Pos: p.pos,
+	}
 	v.Prop = p.mustParseWordsUntil("of")
 	p.mustParseWordOneOf("of")
 	p.parseArticle()
@@ -673,7 +700,11 @@ func (p *Parser) parseDeclPropVal() (s Sentence, err error) {
 	if val, ok := p.parseQuotedString(); ok {
 		v.Val = val
 	} else {
-		v.Val = p.mustParseWordsUntil()
+		w := p.mustParseWordsUntil()
+		v.Val = w
+		if n, err := strconv.Atoi(w); err == nil {
+			v.Val = n
+		}
 	}
 	p.mustParseSentenceEnd()
 	return v, nil
@@ -682,7 +713,9 @@ func (p *Parser) parseDeclPropVal() (s Sentence, err error) {
 func (p *Parser) parseDeclPropEnum() (s Sentence, err error) {
 	defer p.declBackup(&err)()
 
-	var e PropEnum
+	e := PropEnum{
+		Pos: p.pos,
+	}
 	e.Object = p.mustParseWordsUntil("can")
 	p.mustParseWordOneOf("can")
 	p.mustParseWordOneOf("be")
@@ -721,7 +754,9 @@ func (p *Parser) parseDeclRelation() (s Sentence, err error) {
 		panic("bug: unknown relation number")
 	}
 
-	var r Relation
+	r := Relation{
+		Pos: p.pos,
+	}
 	r.Name = p.mustParseWordsUntil("relates")
 	p.mustParseWordOneOf("relates")
 	p.mustParseWordOneOf("a", "one", "two", "various")
@@ -743,7 +778,9 @@ func (p *Parser) parseDeclRelation() (s Sentence, err error) {
 func (p *Parser) parseDeclVector() (s Sentence, err error) {
 	defer p.declBackup(&err)()
 
-	var v Vector
+	v := Vector{
+		Pos: p.pos,
+	}
 	v.Pattern = p.mustParseWord()
 	p.mustParseWordOneOf("specifies")
 	p.parseArticle()
@@ -768,13 +805,16 @@ func (p *Parser) parseDeclVector() (s Sentence, err error) {
 func (p *Parser) parseDeclIsIn() (s Sentence, err error) {
 	defer p.declBackup(&err)()
 
-	var is IsIn
+	is := IsIn{
+		Pos: p.pos,
+	}
 	n, ok := p.parseNumber()
 	if ok {
 		o := p.mustParseWordsUntil("is", "are")
 		for i := 0; i < n; i++ {
 			is.Objects = append(is.Objects, o)
 		}
+		is.Decl = true
 	} else {
 		for {
 			o := p.mustParseWordsUntil("is", "are")
@@ -787,16 +827,19 @@ func (p *Parser) parseDeclIsIn() (s Sentence, err error) {
 
 	p.mustParseWordOneOf("is", "are")
 	p.mustParseWordOneOf("in")
-	p.parseArticle()
+	p.parseArticleCapital()
 	is.Where = p.mustParseWordsUntil()
 	p.mustParseSentenceEnd()
 	return is, nil
 }
 
-func (p *Parser) parseDeclIs() (s Sentence, err error) {
+func (p *Parser) parseDeclIs(article string) (s Sentence, err error) {
 	defer p.declBackup(&err)()
 
-	var is Is
+	is := Is{
+		Pos:     p.pos,
+		Article: article,
+	}
 	is.Object = p.mustParseWordsUntil("is", "are")
 	p.mustParseWordOneOf("is", "are")
 	if val, ok := p.parseQuotedString(); ok {
@@ -806,6 +849,8 @@ func (p *Parser) parseDeclIs() (s Sentence, err error) {
 	}
 	is.Initially = p.parseWordOneOf("initially")
 	is.Usually = p.parseWordOneOf("usually")
+	is.Always = p.parseWordOneOf("always")
+	is.Never = p.parseWordOneOf("never")
 	if p.parseWordOneOf("east", "west", "south", "north", "above", "below") {
 		is.Direction = p.items[p.iti].val
 		if is.Direction != "above" && is.Direction != "below" {
@@ -817,7 +862,7 @@ func (p *Parser) parseDeclIs() (s Sentence, err error) {
 	is.Value = p.mustParseWordsUntil("and")
 	if p.parseComma() || p.parseWordOneOf("and") {
 		is.EnumVal = append(is.EnumVal, is.Value.(string))
-		is.Value = ""
+		is.Value = nil
 		for {
 			v := p.mustParseWordsUntil("and")
 			is.EnumVal = append(is.EnumVal, v)
@@ -825,6 +870,20 @@ func (p *Parser) parseDeclIs() (s Sentence, err error) {
 				break
 			}
 			p.parseWordOneOf("and")
+		}
+	}
+	if w, ok := is.Value.(string); ok {
+		n, err := strconv.Atoi(w)
+		isNumber := err == nil
+		switch {
+		case isNumber:
+			is.Value = n
+		case strings.EqualFold(w, "true"):
+			is.Value = true
+		case strings.EqualFold(w, "false"):
+			is.Value = false
+		default:
+			is.Value = w
 		}
 	}
 	p.mustParseSentenceEnd()
@@ -858,13 +917,19 @@ func (p *Parser) parseRawPhrases() []item {
 	}
 }
 
-// TODO: avoid capturing rule name (check for left-paren, this, is)
 func (p *Parser) parseRawExpr() []item {
 	it := p.next()
 	start := p.iti
 	for {
 		switch it.typ {
-		case itemWord, itemLeftParen, itemRightParen:
+		case itemLeftParen:
+			// Don't consume "(this is the blabla rule)" as it's part of rule declaration.
+			if p.peek().val == "this" && p.items[p.iti+2].val == "is" {
+				items := p.items[start:p.iti]
+				p.backup()
+				return items
+			}
+		case itemWord, itemRightParen:
 		case itemColon, itemSentenceEnd:
 			items := p.items[start:p.iti]
 			p.backup()
