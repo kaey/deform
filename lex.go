@@ -24,7 +24,7 @@ const (
 	itemLeftParen
 	itemRightParen
 	itemComment
-	itemSpace
+	// itemSpace
 	itemNL
 	itemTab
 )
@@ -117,7 +117,8 @@ func lexSpace(l *lexer) stateFn {
 	for {
 		if r := l.next(); r != ' ' {
 			l.backup()
-			l.emit(itemSpace)
+			// l.emit(itemSpace)
+			l.start = l.pos
 			return lexSentence
 		}
 	}

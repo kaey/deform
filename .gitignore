@@ -1,6 +1,4 @@
 /_ext
-/imports.sh
-/tq
-/testdata
-/files.go
 /log.txt
+/tq
+/tq_*

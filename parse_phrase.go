@@ -1,6 +1,8 @@
 package main
 
-func ParsePhrases(items []item, dict *Dict) ([]Phrase, error) {
+import "log"
+
+func ParsePhrases(items []item, dict *Dict) (phs []Phrase, err error) {
 	p := &Parser{
 		items: items,
 		iti:   -1, // calling next() will point to first available item
@@ -10,14 +12,16 @@ func ParsePhrases(items []item, dict *Dict) ([]Phrase, error) {
 	defer func() {
 		if r := recover(); r != nil {
 			if r != errParse {
+				log.Println(p.fmtItems()) // TODO
 				panic(r)
 			}
-			panic(p.err)
+			// panic(p.err)
+			err = p.err
 		}
 	}()
 
-	phs := p.parsePhrases()
-	return phs, p.err
+	phs = p.parsePhrases()
+	return
 }
 
 func (p *Parser) parsePhrases() []Phrase {
@@ -50,7 +54,7 @@ func (p *Parser) parsePhrases() []Phrase {
 	}
 
 	if len(phs) == 0 {
-		p.errorf("expected at least 1 phrase")
+		p.errorf("expected at least 1 phrase: %v", p.fmtItems())
 	}
 	p.indent--
 	return phs
@@ -76,7 +80,21 @@ func (p *Parser) parsePhrase() Phrase {
 		ph := PhraseIf{
 			Pos: it.pos,
 		}
-		ph.Expr = p.parseExpr()
+		ph.Expr = p.parseExpr1()
+		if p.parseComma() {
+			ph.Phrases = []Phrase{p.parsePhrase()}
+			return ph
+		}
+		p.mustParseColon()
+		ph.Phrases = p.parsePhrases()
+		return ph
+	case "unless":
+		it := p.next()
+		ph := PhraseIf{
+			Pos: it.pos,
+			Neg: true,
+		}
+		ph.Expr = p.parseExpr1()
 		if p.parseComma() {
 			ph.Phrases = []Phrase{p.parsePhrase()}
 			return ph
@@ -90,7 +108,7 @@ func (p *Parser) parsePhrase() Phrase {
 			Pos: it.pos,
 		}
 		if p.parseWordOneOf("if") {
-			ph.Expr = p.parseExpr()
+			ph.Expr = p.parseExpr1()
 		}
 		if p.peek().typ == itemWord {
 			ph.Phrases = []Phrase{p.parsePhrase()}
@@ -99,69 +117,52 @@ func (p *Parser) parsePhrase() Phrase {
 		p.mustParseColon()
 		ph.Phrases = p.parsePhrases()
 		return ph
+	case "repeat":
+		it := p.next()
+		ph := PhraseRepeat{
+			Pos: it.pos,
+		}
+		p.mustParseWordOneOf("with")
+		ph.Local = p.mustParseWord()
+		p.mustParseWordOneOf("running")
+		p.mustParseWordOneOf("through")
+		p.dict.Add("local var", ph.Local)
+		p.dict.Sort()
+		ph.List = p.parseExpr1()
+		p.mustParseColon()
+		ph.Phrases = p.parsePhrases()
+		return ph
+	case "let":
+		it := p.next()
+		ph := PhraseLet{
+			Pos: it.pos,
+		}
+		ph.Local = p.mustParseWordsUntil("be")
+		p.dict.Add("local var", ph.Local)
+		p.dict.Sort()
+		p.mustParseWordOneOf("be")
+		ph.Value = p.parseExpr1()
+		return ph
+	case "follow":
+		it := p.next()
+		_ = it
+		p.parseExpr1()
+		return nil // TODO
+	case "try":
+		it := p.next()
+		_ = it
+		_ = p.parseWordOneOf("silently")
+		p.parseExpr1()
+		return nil // TODO
 	}
 
 	return p.parsePhraseFuncCall()
-	/*
-		switch it.val {
-		case "now":
-			ph := PhraseNow{
-				Pos: it.pos,
-			}
-			p.parseArticle()
-			ph.Object = p.mustParseWordsUntil("is")
-			p.mustParseWordOneOf("is")
-			ph.Expr = p.parseExpr()
-			return ph
-		case "add":
-			ph := PhraseListAdd{
-				Pos: it.pos,
-			}
-			if s, ok := p.parseQuotedString(); ok {
-				ph.Value = s
-			} else {
-				ph.Value = Ident(p.mustParseWordsUntil("to"))
-			}
-
-			p.mustParseWordOneOf("to")
-			p.parseArticle()
-			ph.List = p.mustParseWordsUntil()
-			return ph
-		case "let":
-			ph := PhraseLet{
-				Pos: it.pos,
-			}
-			ph.Object = p.mustParseWordsUntil("be")
-			p.mustParseWordOneOf("be")
-			ph.Value = p.parseExpr()
-			return ph
-
-		case "say":
-			return p.parsePhraseSay()
-		}
-		// TODO: decide, decide on
-
-		return p.parsePhraseFuncCall()*/
 }
-
-/*func (p *Parser) parsePhraseSay() PhraseSay {
-	ph := PhraseSay{
-		Pos: p.items[p.iti].pos,
-	}
-
-	if q, ok := p.parseQuotedString(); ok {
-		ph.Say = q
-		return ph
-	}
-
-	ph.Say = p.parsePhraseFuncCall()
-	return ph
-}*/
 
 func (p *Parser) parsePhraseFuncCall() Phrase {
 	pos := p.peek().pos
 	return PhraseFuncCall{
 		Pos:  pos,
-		Func: p.parseExpr(),
+		Func: p.parseExpr1(),
 	}
 }

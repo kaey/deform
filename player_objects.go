@@ -19,6 +19,7 @@ func (terp *Interp) addObject(o *PObject) *PObject {
 		}
 	}
 	terp.Objects = append(terp.Objects, o)
+	terp.dict.Add(o, o.Name)
 	return o
 }
 
@@ -32,22 +33,35 @@ func (terp *Interp) getObject(v string) *PObject {
 	return nil
 }
 
-func (o *PObject) addProp(v *PVar) *PVar {
-	// TODO: check dups
+func (terp *Interp) addObjectProp(o *PObject, v *PVar) *PVar {
+	for _, p := range o.Props {
+		if strings.EqualFold(p.Name, v.Name) {
+			panic(fmt.Sprintf("%v: prop %v already defined at %v", v.Pos, v.Name, p.Pos))
+		}
+	}
+	if len(v.EnumVals) > 0 {
+		fmt.Fprintf(Log("props"), "%v: %v\n", o.Name, v.EnumVals)
+		for _, e := range v.EnumVals {
+			terp.dict.Add(e, e)
+		}
+	} else {
+		terp.dict.Add(v, v.Name+" of @")
+	}
+
 	o.Props = append(o.Props, v)
 	return v
 }
 
-func (o *PObject) setProp(prop string, set bool) error {
-	p := o.getProp(prop)
+func (terp *Interp) setObjectProp(o *PObject, prop string, set bool) error {
+	p := terp.getObjectProp(o, prop)
 	if p == nil {
 		return fmt.Errorf("%v has no prop %q", o.Name, prop)
 	}
 
-	switch p.Kind {
-	case PKindBool:
+	switch p.Kind.Name {
+	case "truth state":
 		p.Val = set
-	case PKindEnum:
+	case "enum":
 		p.Val = p.enumVal(prop)
 	default:
 		return fmt.Errorf("can't set prop %q for %v to val %q, expected prop kind enum or bool", p.Name, o.Name, prop)
@@ -56,7 +70,7 @@ func (o *PObject) setProp(prop string, set bool) error {
 	return nil
 }
 
-func (o *PObject) getProp(v string) *PVar {
+func (terp *Interp) getObjectProp(o *PObject, v string) *PVar {
 	for i := range o.Props {
 		if strings.EqualFold(v, o.Props[i].Name) {
 			return o.Props[i]
@@ -69,9 +83,9 @@ func (o *PObject) getProp(v string) *PVar {
 		}
 	}
 
-	p := o.Kind.getProp(v)
+	p := terp.getKindProp(o.Kind, v)
 	if p != nil {
-		return o.addProp(p.copy())
+		return terp.addObjectProp(o, p.copy())
 	}
 
 	return nil

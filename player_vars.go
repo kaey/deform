@@ -25,6 +25,7 @@ func (terp *Interp) addVar(v *PVar) *PVar {
 	}
 
 	terp.Vars = append(terp.Vars, v)
+	terp.dict.Add(v, v.Name)
 	return v
 }
 

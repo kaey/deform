@@ -24,13 +24,15 @@ type Definition struct {
 	Object     string
 	Called     string
 	Prop       string
+	NegProp    string
 	RawPhrases []item
-	RawCond    []item
 }
 
 type Func struct {
 	Pos        Pos
 	Parts      []FuncPart
+	RetKind    string
+	Flags      []string
 	Comment    Comment
 	RawPhrases []item
 }
@@ -75,9 +77,10 @@ type Understand string // Used for input parser
 type DoesThePlayerMean string // Used for input parser
 
 type ThereAre struct {
-	Pos  Pos
-	N    int
-	Kind string
+	Pos   Pos
+	N     int
+	Kind  string
+	Where string
 }
 
 type FileOf string
@@ -120,6 +123,8 @@ type Action struct {
 	Name      string
 	NThings   int
 	Touchable bool
+	Visible   bool
+	Carried   bool
 }
 
 // [Prop] of [Object] is [usually] [Val].
@@ -148,7 +153,6 @@ type Relation struct {
 	Object2   string
 	NObjects2 int
 	Kind2     string
-	RawCond   []item
 }
 
 type Verb struct {
@@ -187,4 +191,23 @@ type IsIn struct {
 	Objects []string
 	Where   string
 	Decl    bool // Implicit declaration of N objects.
+}
+
+type BeginsHere struct {
+	Pos    Pos
+	Name   string
+	Author string
+}
+
+type EndsHere struct {
+	Pos  Pos
+	Name string
+}
+
+type Activity struct {
+	Pos        Pos
+	Comment    Comment
+	Name       string
+	When       string
+	RawPhrases []item
 }

@@ -2,25 +2,18 @@ package main
 
 import (
 	"fmt"
-	"io"
+	"log"
+	"net/http"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
-	"github.com/davecgh/go-spew/spew"
-	"golang.org/x/term"
+	_ "net/http/pprof"
 )
 
-var logfile *os.File
-
-func init() {
-	f, err := os.Create("log.txt")
-	if err != nil {
-		panic(err)
-	}
-	logfile = f
-}
-
 func main() {
+	go http.ListenAndServe(":3998", nil)
 	if err := Main(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -28,46 +21,57 @@ func main() {
 }
 
 func Main() error {
-	devtty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0600)
-	if err != nil {
-		return fmt.Errorf("open tty error error: %w", err)
-	}
-	defer devtty.Close()
-
-	stty, err := term.MakeRaw(int(devtty.Fd()))
-	if err != nil {
-		return fmt.Errorf("make raw tty error: %w", err)
-	}
-	defer fmt.Fprintln(devtty)
-	defer term.Restore(int(devtty.Fd()), stty)
-	tty := term.NewTerminal(devtty, "> ")
-
-	terp := newInterp(tty)
+	terp := newInterp()
+	start := time.Now()
+	sentences := make([]Sentence, 0, 100)
 	for _, f := range files {
-		ss, err := ParseFile(f)
+		s, err := ParseFile(f)
 		if err != nil {
 			return err
 		}
-		for _, s := range ss {
-			terp.evalSentence(s)
+		sentences = append(sentences, s...)
+	}
+	log.Println("Parse done in", time.Since(start))
+
+	start = time.Now()
+	errs := make(errs, 0, 10)
+	for _, s := range sentences {
+		if err := terp.evalSentence(s); err != nil {
+			errs = append(errs, err)
+			if len(errs) > 9 {
+				break
+			}
 		}
 	}
 
+	if len(errs) > 0 {
+		return errs
+	}
+	log.Println("Eval done in", time.Since(start))
+
+	start = time.Now()
 	if err := terp.secondStage(); err != nil {
 		return err
 	}
+	log.Println("Second stage done in", time.Since(start))
 
-	if err := terp.mainLoop(); err != nil {
-		return err
-	}
+	terp.outPrintGo("tq_ng/game")
 
 	return nil
 }
 
+type errs []error
+
+func (e errs) Error() string {
+	r := new(strings.Builder)
+	for _, ee := range e {
+		fmt.Fprintf(r, "%v\n", ee)
+	}
+	return r.String()
+}
+
 type Interp struct {
-	tty  *term.Terminal
 	dict *Dict
-	rng  uint64
 	tmp  *interpTmp
 
 	Funcs     []*PFunc
@@ -75,37 +79,30 @@ type Interp struct {
 	Vars      []*PVar
 	Objects   []*PObject
 	RelInRoom []*PRel
-	Tables    map[string]PTable  // TODO
-	Rulebooks map[string][]PRule // TODO
-	Actions   map[string]Action  // TODO
+	Tables    map[string]PTable // TODO
 }
 
 type interpTmp struct {
-	prev  Sentence
 	funcs []Func
-	defs  []Definition // TODO
+	defs  []Definition
+	rules []Rule
 }
 
-func newInterp(tty *term.Terminal) *Interp {
+func newInterp() *Interp {
 	terp := &Interp{
-		tty:       tty,
-		dict:      new(Dict),
-		tmp:       new(interpTmp),
-		Tables:    make(map[string]PTable, 100),
-		Rulebooks: make(map[string][]PRule, 100),
+		dict:   new(Dict),
+		tmp:    new(interpTmp),
+		Tables: make(map[string]PTable, 100),
 	}
 
 	terp.addStandardKinds()
 	terp.addStandardFuncs()
+	terp.addStandardRelations()
 
 	return terp
 }
 
-func (terp *Interp) evalSentence(s Sentence) {
-	defer func() {
-		terp.tmp.prev = s
-	}()
-
+func (terp *Interp) evalSentence(s Sentence) error {
 	switch v := s.(type) {
 	case Subheader:
 	case Figure:
@@ -114,12 +111,14 @@ func (terp *Interp) evalSentence(s Sentence) {
 	case DoesThePlayerMean:
 	case RuleFor:
 	case Comment:
+	case BeginsHere:
+	case EndsHere:
 	case Table:
 		// TODO
 		name := strings.ToLower(v.Name)
 		t := terp.Tables[name]
 		if t.Kinds == nil {
-			t.Pos = v.Pos // TODO: remember pos for continued tables.
+			t.Pos = v.Pos
 			t.Kinds = make(map[string]string)
 			for i := range v.ColKinds {
 				t.Kinds[v.ColNames[i]] = v.ColKinds[i]
@@ -134,28 +133,21 @@ func (terp *Interp) evalSentence(s Sentence) {
 		}
 		terp.Tables[name] = t
 	case Variable:
-		// TODO: use terp.addVar
-		if v2 := terp.getVar(v.Name); v2 != nil {
-			panic(fmt.Sprintf("var %s already defined at %v", v.Name, v2.Pos))
+		k := terp.getKind(v.Kind)
+		if k == nil {
+			return fmt.Errorf("%v: kind not found for variable: %v", v.Pos, v.Name)
 		}
 
-		if k := terp.getKind(v.Kind); k != nil {
-			terp.Vars = append(terp.Vars, &PVar{
-				Pos:   v.Pos,
-				Name:  v.Name,
-				Array: v.Array,
-				Kind:  k,
-			})
-			terp.dict.Add(&terp.Vars[len(terp.Vars)-1], v.Name)
-			return
-		}
-
-		panic(fmt.Sprintf("%v: kind not found for variable: %v", v.Pos, v.Name))
-
+		terp.addVar(&PVar{
+			Pos:   v.Pos,
+			Name:  v.Name,
+			Array: v.Array,
+			Kind:  k,
+		})
 	case Is:
 		if v.Direction != "" {
 			// TODO
-			return
+			return nil
 		}
 
 		// TODO: handle negate and never
@@ -163,29 +155,28 @@ func (terp *Interp) evalSentence(s Sentence) {
 		k := terp.getKind(v.Object)
 		if k != nil {
 			if len(v.EnumVal) > 0 {
-				if k.Parent != PKindValue {
-					panic(fmt.Sprintf("%v: enum can only be assigned to a kind of value", v.Pos))
+				if k.Parent.Name != "value" {
+					return fmt.Errorf("%v: enum can only be assigned to a kind of value", v.Pos)
 				}
-				k.Parent = PKindEnum
+				k.Parent = terp.getKind("enum")
 				k.ValidVals = v.EnumVal
-				return
+				return nil
 			}
 			if val, ok := v.Value.(string); ok {
 				// TODO: add setProp
-				p := k.getProp(val)
+				p := terp.getKindProp(k, val)
 				if p == nil {
-					spew.Fdump(terp.tty, k)
-					panic(fmt.Sprintf("%v: kind %v has no prop %v", v.Pos, v.Object, val))
+					return fmt.Errorf("%v: kind %v has no prop %v", v.Pos, v.Object, val)
 				}
 				if len(p.EnumVals) > 0 {
 					p.Val = p.enumVal(val)
 				} else {
 					p.Val = true
 				}
-				return
+				return nil
 			}
 
-			panic(fmt.Sprintf("%v: kind value not understood", v.Pos))
+			return fmt.Errorf("%v: kind value not understood", v.Pos)
 		}
 
 		va := terp.getVar(v.Object)
@@ -194,18 +185,18 @@ func (terp *Interp) evalSentence(s Sentence) {
 			switch val := v.Value.(type) {
 			case int, bool, QuotedString:
 				va.Val = v.Value
-				return
+				return nil
 			case string:
 				o := terp.getObject(val)
 				if o == nil {
-					fmt.Fprintf(logfile, "%v: object not defined: %v\n", v.Pos, val)
-					return
-					panic(fmt.Sprintf("%v: object not defined: %v", v.Pos, val))
+					fmt.Fprintf(Log("errors"), "%v: object not defined: %v\n", v.Pos, val)
+					return nil
+					// return fmt.Errorf("%v: object not defined: %v", v.Pos, val)
 				}
 				va.Val = o
-				return
+				return nil
 			}
-			panic(fmt.Sprintf("%v: var value not understood", v.Pos))
+			return fmt.Errorf("%v: var value not understood", v.Pos)
 		}
 
 		o := terp.getObject(v.Object)
@@ -213,26 +204,36 @@ func (terp *Interp) evalSentence(s Sentence) {
 			if val, ok := v.Value.(string); ok {
 				if val == "everywhere" {
 					// TODO: scenery can be everywhere
-					return
+					return nil
 				}
-				if err := o.setProp(val, !(v.Negate || v.Never)); err != nil {
-					panic(fmt.Sprintf("%v: %v", v.Pos, err))
+				if err := terp.setObjectProp(o, val, !(v.Negate || v.Never)); err != nil {
+					return fmt.Errorf("%v: %v", v.Pos, err)
 				}
 			}
 
-			return
+			return nil
 		}
 
-		if v.Initially || v.Usually || v.Always || v.Never || v.Negate {
-			fmt.Fprintf(logfile, "%v: %v = %v\n", v.Pos, v.Object, v.Value)
-			return // TODO: create implicit var
-			panic(fmt.Sprintf("%v: bug: unparsed value", v.Pos))
+		if v.Initially || v.Always { // TODO: make "always" a constant
+			terp.addVar(&PVar{
+				Pos:  v.Pos,
+				Name: v.Object,
+				Val:  v.Value,
+				Kind: terp.getKind("value"), // TODO: maybe use more specific kind based on value.
+			})
+			return nil
+		}
+
+		if v.Usually || v.Always || v.Never || v.Negate {
+			fmt.Fprintf(Log("errors"), "%v: %v = %v\n", v.Pos, v.Object, v.Value)
+			return nil
+			return fmt.Errorf("%v: bug: unparsed value", v.Pos)
 		}
 
 		if val, ok := v.Value.(string); ok {
 			k, props := terp.getKindWithProps(val)
 			if k == nil {
-				panic(fmt.Sprintf("%v: kind %q is not defined ", v.Pos, val))
+				return fmt.Errorf("%v: kind %q is not defined ", v.Pos, val)
 			}
 
 			o := terp.addObject(&PObject{
@@ -241,38 +242,19 @@ func (terp *Interp) evalSentence(s Sentence) {
 				Kind: k,
 			})
 			for _, p := range props {
-				if err := o.setProp(p, true); err != nil {
-					panic(fmt.Sprintf("%v: %v", v.Pos, err))
+				if err := terp.setObjectProp(o, p, true); err != nil {
+					return fmt.Errorf("%v: %v", v.Pos, err)
 				}
 			}
 
-			return
+			return nil
 		}
 
-		// TODO: check enum val
-		// TODO
-		/*name := strings.ToLower(v.Object)
-		/*if _, exists := terp.Vars[name]; exists {
-			vv := terp.Vars[name]
-			vv.Val = v.Value
-			terp.Vars[name] = vv
-			return
-		}
-
-		if v.Value == "rulebook" {
-			if _, exists := terp.Rulebooks[name]; exists {
-				panic(fmt.Sprintf("rulebook exists: %v", v.Object))
-			}
-			// TODO: do we need it?
-			return
-		}
-
-		// TODO
-		// panic(fmt.Sprintf("does not exist: %+#v", v))*/
+		return fmt.Errorf("does not exist: %v = %v", v.Object, v.Value)
 	case IsIn:
 		where := terp.getObject(v.Where)
 		if where == nil {
-			panic(fmt.Sprintf("%v: room %v is not defined", v.Pos, v.Where))
+			return fmt.Errorf("%v: room %v is not defined", v.Pos, v.Where)
 		}
 
 		for _, obj := range v.Objects {
@@ -280,7 +262,7 @@ func (terp *Interp) evalSentence(s Sentence) {
 			if v.Decl {
 				k, props := terp.getKindWithProps(obj)
 				if k == nil {
-					panic(fmt.Sprintf("%v: kind %v is not defined", v.Pos, obj))
+					return fmt.Errorf("%v: kind %v is not defined", v.Pos, obj)
 				}
 				// Don't use addObjects because dups here are allowed.
 				o := &PObject{
@@ -290,14 +272,14 @@ func (terp *Interp) evalSentence(s Sentence) {
 				}
 				terp.Objects = append(terp.Objects, o)
 				for _, p := range props {
-					if err := o.setProp(p, true); err != nil {
-						panic(fmt.Sprintf("%v: %v", v.Pos, err))
+					if err := terp.setObjectProp(o, p, true); err != nil {
+						return fmt.Errorf("%v: %v", v.Pos, err)
 					}
 				}
 			} else {
 				o = terp.getObject(obj)
 				if o == nil {
-					panic(fmt.Sprintf("%v: object %v is not defined", v.Pos, obj))
+					return fmt.Errorf("%v: object %v is not defined", v.Pos, obj)
 				}
 			}
 			terp.RelInRoom = append(terp.RelInRoom, &PRel{
@@ -308,37 +290,43 @@ func (terp *Interp) evalSentence(s Sentence) {
 	case Func:
 		terp.addFunc(v)
 	case Definition:
-		// TODO
 		terp.tmp.defs = append(terp.tmp.defs, v)
 	case ListedInRulebook:
 		// TODO: priority
 		// panic(fmt.Sprintf("listed: %v", v))
 	case Rule:
-		// TODO
-		/*if v.Rulebook == "" {
-			// TODO
-			return
-		}
-		rb := strings.ToLower(v.Rulebook)
-		rules := terp.tmp.rulebooks[rb]
-		rules = append(rules, v)
-		terp.tmp.rulebooks[rb] = rules*/
+		terp.tmp.rules = append(terp.tmp.rules, v)
 	case Action:
-		// TODO
+		s := strings.Split(v.Name, " ")
+		for i := range s {
+			if s[i] == "it" {
+				s[i] = "@"
+			}
+		}
+		if v.NThings > 1 {
+			s = append(s, "@")
+		}
+
+		terp.dict.Add2(v.Name, s...)
+		terp.dict.Add2(v.Name, append(s, "instead")...)
 	case Prop:
 		if k := terp.getKind(v.Object); k != nil {
 			pk := terp.getKind(v.Kind)
 			if pk != nil {
-				if pk.Parent == PKindEnum {
-					k.addProp(&PVar{
+				if pk.Parent != nil && pk.Parent.Name == "enum" {
+					name := v.Name
+					if name == "" {
+						name = pk.Name
+					}
+					terp.addKindProp(k, &PVar{
 						Pos:      v.Pos,
-						Name:     v.Name,
+						Name:     name,
 						Kind:     pk.Parent,
 						Val:      pk.DefVal,
 						EnumVals: pk.ValidVals,
 					})
 				} else {
-					k.addProp(&PVar{
+					terp.addKindProp(k, &PVar{
 						Pos:  v.Pos,
 						Name: v.Name,
 						Kind: pk,
@@ -346,50 +334,70 @@ func (terp *Interp) evalSentence(s Sentence) {
 					})
 				}
 
-				return
+				return nil
 			}
 
 			// has [prop] [propval]
 			parts := strings.Split(v.Kind, " ")
 			if len(parts) != 2 {
-				panic(fmt.Sprintf("%v: prop not understood: %v", v.Pos, v.Kind))
+				return fmt.Errorf("%v: prop not understood: %v", v.Pos, v.Kind)
 			}
-			p := k.getProp(parts[0])
+			p := terp.getKindProp(k, parts[0])
 			if p == nil {
-				panic(fmt.Sprintf("%v: %v doesn't have prop: %v", v.Pos, v.Object, parts[0]))
+				return fmt.Errorf("%v: %v doesn't have prop: %v", v.Pos, v.Object, parts[0])
 			}
 			p.Val = parts[1] // TODO: parse val?
-			return
+			return nil
 		}
 
 		if o := terp.getObject(v.Object); o != nil {
 			pk := terp.getKind(v.Kind)
 			if pk != nil {
-				o.addProp(&PVar{
+				terp.addObjectProp(o, &PVar{
 					Pos:  v.Pos,
 					Name: v.Name,
 					Kind: pk,
 					Val:  pk.DefVal,
 				})
-				return
+				return nil
 			}
 
 			// has [prop] [propval]
 			parts := strings.Split(v.Kind, " ")
 			if len(parts) != 2 {
-				panic(fmt.Sprintf("%v: prop not understood: %v", v.Pos, v.Kind))
+				return fmt.Errorf("%v: prop not understood: %v", v.Pos, v.Kind)
 			}
-			p := o.getProp(parts[0])
+			p := terp.getObjectProp(o, parts[0])
 			if p == nil {
-				panic(fmt.Sprintf("%v: %v doesn't have prop: %v", v.Pos, v.Object, parts[0]))
+				return fmt.Errorf("%v: %v doesn't have prop: %v", v.Pos, v.Object, parts[0])
 			}
 			p.Val = parts[1] // TODO: parse val? also consider p.setVal
-			return
+			return nil
 		}
 
-		panic(fmt.Sprintf("%v: prop for undefined object: %v", v.Pos, v.Object))
+		return fmt.Errorf("%v: prop for undefined object: %v", v.Pos, v.Object)
 	case PropVal:
-		// TODO
+		k := terp.getKind(v.Object)
+		if k != nil {
+			p := terp.getKindProp(k, v.Prop)
+			if p == nil {
+				return fmt.Errorf("%v: kind %v has no prop %q", v.Pos, v.Object, v.Prop)
+			}
+			p.Val = v.Val // TODO: verify kind
+			return nil
+		}
+
+		o := terp.getObject(v.Object)
+		if o != nil {
+			p := terp.getObjectProp(o, v.Prop)
+			if p == nil {
+				return fmt.Errorf("%v: object %v has no prop %q", v.Pos, v.Object, v.Prop)
+			}
+			p.Val = v.Val // TODO: verify kind
+			return nil
+		}
+
+		return fmt.Errorf("%v: prop for undefined object or kind: %v", v.Pos, v.Object)
 	case PropEnum:
 		// TODO: len vals == 1 should be bool
 		k := terp.getKind(v.Object)
@@ -398,14 +406,14 @@ func (terp *Interp) evalSentence(s Sentence) {
 			if name == "" {
 				name = fmt.Sprintf("%v-enum-%v", k.Name, strings.Join(v.Vals, ","))
 			}
-			k.addProp(&PVar{
+			terp.addKindProp(k, &PVar{
 				Pos:      v.Pos,
 				Name:     name,
 				Val:      len(v.Vals) - 1,
-				Kind:     PKindEnum,
+				Kind:     terp.getKind("enum"),
 				EnumVals: v.Vals,
 			})
-			return
+			return nil
 		}
 
 		o := terp.getObject(v.Object)
@@ -414,22 +422,22 @@ func (terp *Interp) evalSentence(s Sentence) {
 			if name == "" {
 				name = fmt.Sprintf("%v-enum-%v", o.Name, strings.Join(v.Vals, ","))
 			}
-			o.addProp(&PVar{
+			terp.addObjectProp(o, &PVar{
 				Pos:      v.Pos,
 				Name:     name,
 				Val:      len(v.Vals) - 1,
-				Kind:     PKindEnum,
+				Kind:     terp.getKind("enum"),
 				EnumVals: v.Vals,
 			})
-			return
+			return nil
 		}
 
-		panic(fmt.Sprintf("%v: %s is not defined", v.Pos, v.Object))
+		return fmt.Errorf("%v: %s is not defined", v.Pos, v.Object)
 
 	case Kind:
 		par := terp.getKind(v.Kind)
 		if par == nil {
-			panic(fmt.Sprintf("%v: parent kind undefined: %v", v.Pos, v.Kind))
+			return fmt.Errorf("%v: parent kind undefined: %v", v.Pos, v.Kind)
 		}
 
 		terp.addKind(&PKind{
@@ -438,7 +446,38 @@ func (terp *Interp) evalSentence(s Sentence) {
 			Parent: par,
 		})
 	case ThereAre:
-		// TODO
+		k, props := terp.getKindWithProps(v.Kind)
+		if k == nil {
+			return fmt.Errorf("%v: kind %q not defined", v.Pos, v.Kind)
+		}
+		var w *PObject
+		if v.Where != "" {
+			w = terp.getObject(v.Where)
+			if w == nil {
+				return fmt.Errorf("%v: object %q not defined", v.Pos, v.Where)
+			}
+		}
+
+		for i := 0; i < v.N; i++ {
+			// Don't use addObjects because dups here are allowed.
+			o := &PObject{
+				Pos:  v.Pos,
+				Name: k.Name,
+				Kind: k,
+			}
+			for _, p := range props {
+				if err := terp.setObjectProp(o, p, true); err != nil {
+					return fmt.Errorf("%v: %v", v.Pos, err)
+				}
+			}
+			terp.Objects = append(terp.Objects, o)
+			if w != nil {
+				terp.RelInRoom = append(terp.RelInRoom, &PRel{
+					Left:  o,
+					Right: w,
+				})
+			}
+		}
 	case QuotedString:
 		// TODO
 	case Vector:
@@ -446,178 +485,153 @@ func (terp *Interp) evalSentence(s Sentence) {
 	case Relation:
 		// TODO
 	case Verb:
+		terp.dict.AddBinary(v.Rel, v.Name)
+		for _, a := range v.Alts {
+			terp.dict.AddBinary(v.Rel, a)
+		}
+	case Activity:
 		// TODO
 	default:
-		panic(fmt.Sprintf("unknown sentence %T", v))
+		return fmt.Errorf("unknown sentence %T", v)
 	}
-}
-
-func (terp *Interp) secondStage() error {
-	// TODO: check dup kinds
-	// TODO: sort kinds
-	// TODO: sort dict
-	// TODO: parse funcs and implode kinds in dict
-	// TODO: test for props on kinds that don't have such props
-
-	/*sort.Slice(terp.tmp.Props, func(i, j int) bool {
-		if terp.tmp.Props[i].Object != terp.tmp.Props[j].Object {
-			return terp.tmp.Props[i].Object < terp.tmp.Props[j].Object
-		}
-		if terp.tmp.Props[i].Name != terp.tmp.Props[j].Name {
-			return terp.tmp.Props[i].Name < terp.tmp.Props[j].Name
-		}
-		return terp.tmp.Props[i].Kind < terp.tmp.Props[j].Kind
-	})*/
-
-	/*for _, d := range terp.Defs {
-		if d.RawCond.items != nil {
-			e, err := ParseExpr("TODO", d.RawCond, nil)
-			if err != nil {
-				return err
-			}
-			pretty.Fprintf(tty, "%v\n", e)
-		}
-	}*/
-
-	/*for rb, rules := range terp.tmp.Rulebooks {
-		nrules := terp.Rulebooks[rb]
-		for _, r := range rules {
-			nr := PRule{
-				Pos: r.Pos,
-			}
-			e, err := ParseExpr(r.RawCond, nil)
-			if err != nil {
-				return err
-			}
-			nr.Cond = e
-			phs, err := ParsePhrases(r.RawPhrases, nil)
-			if err != nil {
-				return err
-			}
-			nr.Phrases = phs
-			nrules = append(nrules, nr)
-		}
-		terp.Rulebooks[rb] = nrules
-	}*/
 
 	return nil
 }
 
-func (terp *Interp) mainLoop() error {
-	for {
-		line, err := terp.tty.ReadLine()
-		if err != nil {
-			if err == io.EOF {
-				return nil
+func (terp *Interp) secondStage() error {
+	for _, d := range terp.tmp.defs {
+		k := terp.getKind(d.Object)
+		if k == nil {
+			o := terp.getObject(d.Object)
+			if o == nil {
+				return fmt.Errorf("%v: kind or object %v not defined", d.Pos, d.Object)
 			}
-			return err
 		}
-		line = strings.TrimSpace(line)
-		cmd := line
-		if i := strings.IndexByte(line, ' '); i > 0 {
-			cmd = line[:i]
-			line = line[i+1:]
+		terp.dict.Add(d.Prop, d.Prop) // TODO: proper target
+		if d.NegProp != "" {
+			terp.dict.Add("not "+d.Prop, d.NegProp) // TODO: proper target
 		}
-		switch cmd {
-		case "q", "quit":
-			return fmt.Errorf("quit") // TODO: change to nil
-		case "v", "vars":
-			for k, v := range terp.Vars {
-				arr := ""
-				if v.Array {
-					arr = "[]"
-				}
-				fmt.Fprintf(terp.tty, "%v: %v%v = %v\n", k, arr, v.Kind, v.Val)
-			}
-		case "k", "kinds":
-			for _, k := range terp.Kinds {
-				fmt.Fprintf(terp.tty, "%v", k.Name)
-				for p := k.Parent; p != nil; {
-					fmt.Fprintf(terp.tty, " -> %v", p.Name)
-					p = p.Parent
-				}
-				fmt.Fprintf(terp.tty, "\n")
-			}
-		case "t", "tables":
-			for n, t := range terp.Tables {
-				for i, row := range t.Rows {
-					fmt.Fprintf(terp.tty, "%v[%v]: %v\n", n, i, row)
-				}
-			}
-		case "p", "props":
-			/*for _, p := range terp.tmp.props {
-				arr := ""
-				if p.Array {
-					arr = "[]"
-				}
-				fmt.Fprintf(terp.tty, "%v.%v: %v%v\n", p.Object, p.Name, arr, p.Kind)
-			}*/
-		case "ve", "verbs":
-		case "e", "eval":
-			e, err := ParseExpr(lex("tty", line), terp.dict)
-			if err != nil {
-				fmt.Fprintf(terp.tty, "err: %v\n", err)
+	}
+
+	terp.dict.Sort()
+
+	for _, row := range terp.dict.ident {
+		fmt.Fprintf(Log("dict-ident"), "%v\n", row.match)
+	}
+
+	for _, row := range terp.dict.binary {
+		fmt.Fprintf(Log("dict-binary"), "%v\n", row.match)
+	}
+
+	/*{
+		wg := new(sync.WaitGroup)
+		li := make(chan struct{}, 6)
+		for _, r := range terp.tmp.rules {
+			if r.RawCond == nil {
 				continue
 			}
-			r := terp.EvalExpr(e)
-			if r != nil {
-				fmt.Fprintf(terp.tty, "%+#v", r)
-			}
-			fmt.Fprintf(terp.tty, "\n")
-		case "go":
-			// run When play begins
-		}
-	}
-}
+			r := r
+			wg.Add(1)
+			li <- struct{}{}
+			go func() {
+				defer func() {
+					wg.Done()
+					<-li
+				}()
 
-func (terp *Interp) EvalExpr(e interface{}) interface{} {
-	if e == nil {
-		return nil
-	}
+				_, err := ParseExpr(r.RawCond, terp.dict)
+				log.Println("Rule cond:", r.Pos, r.Rulebook)
+				if err != nil {
+					log.Println(err)
+					return
+				}
+			}()
+		}
+		wg.Wait()
+	}*/
 
-	switch e := e.(type) {
-	case PFuncCall:
-		if e.Func.NativeFn != nil {
-			return e.Func.NativeFn(e.Args)
+	{
+		wg := new(sync.WaitGroup)
+		li := make(chan struct{}, 6)
+		for _, r := range terp.tmp.rules {
+			r := r
+			wg.Add(1)
+			li <- struct{}{}
+			go func() {
+				defer func() {
+					wg.Done()
+					<-li
+				}()
+
+				dict := terp.dict.Clone()
+				_, err := ParsePhrases(r.RawPhrases, dict)
+				log.Println("Rule:", r.Pos, r.Name, r.Rulebook)
+				if err != nil {
+					log.Println(err)
+					return
+				}
+			}()
 		}
-		return nil
-	case *PVar:
-		return e.Val
-	case PExprOp:
-		a := terp.EvalExpr(e.Left).(int)
-		b := terp.EvalExpr(e.Right).(int)
-		var r interface{}
-		switch e.Op {
-		case '+':
-			r = a + b
-		case '-':
-			r = a - b
-		case '*':
-			r = a * b
-		case '/':
-			r = a / b
-		case '>':
-			r = a > b
-		case '<':
-			r = a < b
-		}
-		return r
-	case PQuotedString:
-		buf := new(strings.Builder)
-		buf.Grow(20)
-		for _, a := range e.Parts {
-			fmt.Fprint(buf, terp.EvalExpr(a))
-		}
-		return buf.String()
-	case string:
-		return e
-	case int:
-		return e
-	case float64:
-		return e
-	case bool:
-		return e
+		wg.Wait()
 	}
 
-	panic(fmt.Sprintf("bug: unhandled expr type: %T", e))
+	{
+		wg := new(sync.WaitGroup)
+		li := make(chan struct{}, 6)
+		for _, d := range terp.tmp.defs {
+			d := d
+			wg.Add(1)
+			li <- struct{}{}
+			go func() {
+				defer func() {
+					wg.Done()
+					<-li
+				}()
+				dict := terp.dict.Clone()
+				if d.Called != "" {
+					dict.Add("local var", d.Called)
+					dict.Sort()
+				}
+				_, err := ParsePhrases(d.RawPhrases, dict)
+				log.Println("Definition:", d.Pos, d.Object, d.Prop)
+				if err != nil {
+					log.Println(err)
+					return
+				}
+			}()
+		}
+		wg.Wait()
+	}
+
+	/*{
+		wg := new(sync.WaitGroup)
+		li := make(chan struct{}, 6)
+		for _, f := range terp.tmp.funcs {
+			f := f
+			wg.Add(1)
+			li <- struct{}{}
+			go func() {
+				defer func() {
+					wg.Done()
+					<-li
+				}()
+				dict := terp.dict.Clone()
+				for _, p := range f.Parts {
+					if p.Word != "" {
+						continue
+					}
+					dict.Add("func arg", p.ArgName)
+				}
+				_, err := ParsePhrases(f.RawPhrases, dict)
+				log.Println("Func:", f.Pos, funcName(f.Parts))
+				if err != nil {
+					log.Println(err)
+					return
+				}
+			}()
+		}
+		wg.Wait()
+	}*/
+
+	return nil
 }

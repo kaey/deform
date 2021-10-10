@@ -39,7 +39,22 @@ func ParseFile(path string) ([]Sentence, error) {
 	return Parse(path, string(f))
 }
 
-func (p *Parser) next() item {
+func (p *Parser) fmtItems() string {
+	s := make([]string, 0, 5)
+	iti := 0
+	if p.iti > iti {
+		iti = p.iti + 1
+	}
+	for i := iti; i < len(p.items); i++ {
+		if p.items[i].typ == itemSentenceEnd || p.items[i].typ == itemNL {
+			break
+		}
+		s = append(s, p.items[i].val)
+	}
+	return strings.Join(s, " ")
+}
+
+/*func (p *Parser) next() item {
 	for {
 		p.iti++
 		if p.iti > len(p.items)-1 {
@@ -63,6 +78,23 @@ func (p *Parser) backup() {
 			break
 		}
 	}
+}*/
+
+func (p *Parser) next() item {
+	p.iti++
+	if p.iti > len(p.items)-1 {
+		// Only used for expression parser.
+		return item{typ: itemEOF}
+	}
+	it := p.items[p.iti]
+	if it.typ == itemError {
+		p.errorf("%s", it.val)
+	}
+	return it
+}
+
+func (p *Parser) backup() {
+	p.iti--
 }
 
 func (p *Parser) peek() item {
@@ -74,6 +106,9 @@ func (p *Parser) peek() item {
 var errParse = errors.New("parser error")
 
 func (p *Parser) errorf(format string, args ...interface{}) {
+	if p.iti == -1 {
+		p.iti = 0
+	}
 	it := p.items[p.iti]
 	p.err = fmt.Errorf("%s:%d: %w", it.pos.Name, it.pos.Line, fmt.Errorf(format, args...))
 	panic(errParse)
@@ -143,9 +178,15 @@ func (p *Parser) parseSentence() Sentence {
 	case it.val == "Every":
 		p.mustParseWordOneOf("turn")
 		return p.parseRule("Every turn")
+	case it.val == "Instead":
+		p.mustParseWordOneOf("of")
+		return p.parseRule("Instead of")
 	case it.val == "When":
 		p.mustParseWordOneOf("play")
-		p.mustParseWordOneOf("begins")
+		p.mustParseWordOneOf("begins", "ends")
+		if p.items[p.iti].val == "ends" {
+			return p.parseRule("When play ends")
+		}
 		return p.parseRule("When play begins")
 	case it.val == "This":
 		p.mustParseWordOneOf("is")
@@ -169,6 +210,8 @@ func (p *Parser) parseSentence() Sentence {
 	case it.val == "There":
 		p.mustParseWordOneOf("is", "are")
 		return p.parseThereAre()
+	case it.val == "For":
+		return p.parseActivity()
 	}
 
 	p.backup()
@@ -202,18 +245,20 @@ func (p *Parser) parseDefinition() Sentence {
 	def := Definition{
 		Pos: p.pos,
 	}
-	p.parseArticle()
+	p.parseArticleCapital()
 	def.Object = p.mustParseWordsUntil("is", "are")
 	def.Called = p.parseCalled()
 	p.mustParseWordOneOf("is", "are")
-	def.Prop = p.mustParseWordsUntil("if", "when")
+	p.parseArticle()
+	def.Prop = p.mustParseWordsUntil("if", "rather")
+	if p.parseWordOneOf("rather") {
+		p.mustParseWordOneOf("than")
+		def.NegProp = p.mustParseWordsUntil("if")
+	}
 	if p.parseWordOneOf("if") {
 		def.RawPhrases = p.parseRawPhrases()
 		p.mustParseSentenceEnd()
 		return def
-	}
-	if p.parseWordOneOf("when") {
-		def.RawCond = p.parseRawExpr()
 	}
 
 	p.mustParseColon()
@@ -237,11 +282,25 @@ func (p *Parser) parseCalled() string {
 }
 
 func (p *Parser) parseFunc() Sentence {
-	// TODO: decide if, decide whether, decide which kind is, say XXX
 	fn := Func{
 		Pos: p.pos,
 	}
+	if p.parseWordOneOf("say") {
+		fn.RetKind = "text"
+	}
+	if p.parseWordOneOf("decide") {
+		if p.parseWordOneOf("if", "whether") {
+			fn.RetKind = "truth state"
+		} else if p.parseWordOneOf("which", "what") {
+			fn.RetKind = p.mustParseWordsUntil("is")
+			p.mustParseWordOneOf("is")
+		} else {
+			p.errorf("invalid function definition, expected 'To decide if/whether/which")
+		}
+	}
+	p.parseArticle()
 	fn.Parts = p.parseFuncParts()
+	fn.Flags = p.parseFuncFlags()
 	p.mustParseColon()
 	fn.Comment = p.parseComment()
 	fn.RawPhrases = p.parseRawPhrases()
@@ -274,6 +333,10 @@ func (p *Parser) parseFuncParts() []FuncPart {
 	return parts
 }
 
+func (p *Parser) parseFuncFlags() []string {
+	return nil // TODO
+}
+
 func (p *Parser) parseRule(when string) Sentence {
 	r := Rule{
 		Pos: p.pos,
@@ -293,6 +356,11 @@ func (p *Parser) parseRule(when string) Sentence {
 		r.Name = p.mustParseWordsUntil("rule")
 		p.mustParseWordOneOf("rule")
 		p.mustParseRightParen()
+	}
+	if p.parseComma() {
+		r.RawPhrases = p.parseRawPhrases()
+		p.mustParseSentenceEnd()
+		return r
 	}
 	p.mustParseColon()
 	r.Comment = p.parseComment()
@@ -419,9 +487,33 @@ func (p *Parser) parseThereAre() Sentence {
 		n = 1
 	}
 	t.N = n
-	t.Kind = p.mustParseWordsUntil()
+	t.Kind = p.mustParseWordsUntil("in")
+	if p.parseWordOneOf("in") {
+		t.Where = p.mustParseWordsUntil()
+	}
 	p.mustParseSentenceEnd()
 	return t
+}
+
+func (p *Parser) parseActivity() Sentence {
+	a := Activity{
+		Pos: p.pos,
+	}
+
+	a.When = p.mustParseWordsUntil()
+	if p.parseLeftParen() {
+		p.mustParseWordOneOf("this")
+		p.mustParseWordOneOf("is")
+		p.parseArticle()
+		a.Name = p.mustParseWordsUntil("rule")
+		p.mustParseWordOneOf("rule")
+		p.mustParseRightParen()
+	}
+	p.mustParseColon()
+	a.Comment = p.parseComment()
+	a.RawPhrases = p.parseRawPhrases()
+	p.mustParseSentenceEnd()
+	return a
 }
 
 func (p *Parser) parseVerb() Sentence {
@@ -532,6 +624,18 @@ func (p *Parser) parseDecl() Sentence {
 	}
 
 	if s, err := p.parseDeclIs(article); err != nil {
+		errs = append(errs, err)
+	} else {
+		return s
+	}
+
+	if s, err := p.parseDeclBeginsHere(); err != nil {
+		errs = append(errs, err)
+	} else {
+		return s
+	}
+
+	if s, err := p.parseDeclEndsHere(); err != nil {
 		errs = append(errs, err)
 	} else {
 		return s
@@ -675,6 +779,8 @@ func (p *Parser) parseDeclAction() (s Sentence, err error) {
 	} else if p.parseWordOneOf("one") {
 		a.NThings = 1
 		a.Touchable = p.parseWordOneOf("touchable")
+		a.Visible = p.parseWordOneOf("visible")
+		a.Carried = p.parseWordOneOf("carried")
 		p.mustParseWordOneOf("thing")
 	} else if p.parseWordOneOf("two") {
 		a.NThings = 2
@@ -768,9 +874,6 @@ func (p *Parser) parseDeclRelation() (s Sentence, err error) {
 	r.NObjects2 = num()
 	r.Kind2 = p.mustParseWordsUntil("when")
 	r.Object2 = p.parseCalled()
-	if p.parseWordOneOf("when") {
-		r.RawCond = p.parseRawExpr()
-	}
 	p.mustParseSentenceEnd()
 	return r, nil
 }
@@ -817,9 +920,9 @@ func (p *Parser) parseDeclIsIn() (s Sentence, err error) {
 		is.Decl = true
 	} else {
 		for {
-			o := p.mustParseWordsUntil("is", "are")
+			o := p.mustParseWordsUntil("is", "are", "and")
 			is.Objects = append(is.Objects, o)
-			if !p.parseComma() {
+			if !p.parseComma() && !p.parseWordOneOf("and") {
 				break
 			}
 		}
@@ -849,6 +952,7 @@ func (p *Parser) parseDeclIs(article string) (s Sentence, err error) {
 	}
 	is.Initially = p.parseWordOneOf("initially")
 	is.Usually = p.parseWordOneOf("usually")
+	is.Usually = is.Usually || p.parseWordOneOf("normally")
 	is.Always = p.parseWordOneOf("always")
 	is.Never = p.parseWordOneOf("never")
 	if p.parseWordOneOf("east", "west", "south", "north", "above", "below") {
@@ -890,6 +994,35 @@ func (p *Parser) parseDeclIs(article string) (s Sentence, err error) {
 	return is, nil
 }
 
+func (p *Parser) parseDeclBeginsHere() (s Sentence, err error) {
+	defer p.declBackup(&err)()
+
+	bh := BeginsHere{
+		Pos: p.pos,
+	}
+
+	bh.Name = p.mustParseWordsUntil("by")
+	bh.Author = p.mustParseWordsUntil("begins")
+	p.mustParseWordOneOf("begins")
+	p.mustParseWordOneOf("here")
+	p.mustParseSentenceEnd()
+	return bh, nil
+}
+
+func (p *Parser) parseDeclEndsHere() (s Sentence, err error) {
+	defer p.declBackup(&err)()
+
+	bh := EndsHere{
+		Pos: p.pos,
+	}
+
+	bh.Name = p.mustParseWordsUntil("ends")
+	p.mustParseWordOneOf("ends")
+	p.mustParseWordOneOf("here")
+	p.mustParseSentenceEnd()
+	return bh, nil
+}
+
 func (p *Parser) parseUnknownSentence() string {
 	s := new(strings.Builder)
 	for {
@@ -924,7 +1057,7 @@ func (p *Parser) parseRawExpr() []item {
 		switch it.typ {
 		case itemLeftParen:
 			// Don't consume "(this is the blabla rule)" as it's part of rule declaration.
-			if p.peek().val == "this" && p.items[p.iti+2].val == "is" {
+			if p.peek().val == "this" {
 				items := p.items[start:p.iti]
 				p.backup()
 				return items

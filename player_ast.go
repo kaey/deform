@@ -21,8 +21,14 @@ type PDefinition struct {
 	Phrases []Phrase
 }
 
-type PExprOp struct {
-	Op    byte
+type PExprUnary struct {
+	Op   interface{}
+	Expr interface{}
+}
+
+type PExprBinary struct {
+	Op    interface{}
+	Neg   bool
 	Left  interface{}
 	Right interface{}
 }
@@ -40,9 +46,9 @@ type PhraseListAdd struct {
 }
 
 type PhraseLet struct {
-	Pos    Pos
-	Object string
-	Value  interface{}
+	Pos   Pos
+	Local string
+	Value interface{}
 }
 
 type PhraseWhile struct {
@@ -53,6 +59,7 @@ type PhraseWhile struct {
 
 type PhraseIf struct {
 	Pos     Pos
+	Neg     bool
 	Expr    interface{}
 	Phrases []Phrase
 }
@@ -76,4 +83,11 @@ type PhraseDecide struct {
 type PhraseFuncCall struct {
 	Pos  Pos
 	Func interface{}
+}
+
+type PhraseRepeat struct {
+	Pos     Pos
+	Local   string
+	List    interface{}
+	Phrases []Phrase
 }

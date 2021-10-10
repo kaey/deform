@@ -22,7 +22,7 @@ func concat(s ...string) string {
 	b := new(strings.Builder)
 	b.Grow(10)
 	b.WriteString(s[0])
-	for i := 0; i < len(s)-1; i++ {
+	for i := 1; i < len(s)-1; i++ {
 		b.WriteString(", ")
 		b.WriteString(s[i])
 	}
