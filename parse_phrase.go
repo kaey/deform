@@ -7,6 +7,7 @@ func ParsePhrases(items []item, dict *Dict) (phs []Phrase, err error) {
 		items: items,
 		iti:   -1, // calling next() will point to first available item
 		dict:  dict,
+		memo:  make(map[int]Memo, 5),
 	}
 
 	defer func() {

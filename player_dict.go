@@ -3,16 +3,18 @@ package main
 import (
 	"sort"
 	"strings"
+
+	"go4.org/intern"
 )
 
 type Dict struct {
-	ident  mrows
-	binary mrows
+	ident  patterns
+	binary patterns
 }
 
 func (d *Dict) Clone() *Dict {
-	ident := make(mrows, len(d.ident))
-	binary := make(mrows, len(d.binary))
+	ident := make(patterns, len(d.ident))
+	binary := make(patterns, len(d.binary))
 	copy(ident, d.ident)
 	copy(binary, d.binary)
 	return &Dict{ident, binary}
@@ -23,17 +25,17 @@ func (d *Dict) Sort() {
 	d.binary = d.binary.Sort()
 }
 
-type mrows []mrow
+type patterns []pattern
 
-func (mr mrows) Sort() mrows {
+func (p patterns) Sort() patterns {
 	// Clean dups first
-	var nr mrows
-	exists := func(m2 mrow) bool {
+	var np patterns
+	exists := func(m2 pattern) bool {
 	loop:
-		for _, m := range nr {
-			if len(m.match) == len(m2.match) {
-				for j := range m.match {
-					if m.match[j] != m2.match[j] {
+		for _, m := range np {
+			if len(m.parts) == len(m2.parts) {
+				for j := range m.parts {
+					if m.parts[j] != m2.parts[j] {
 						continue loop
 					}
 				}
@@ -43,63 +45,70 @@ func (mr mrows) Sort() mrows {
 
 		return false
 	}
-	for _, m := range mr {
+	for _, m := range p {
 		if exists(m) {
 			continue
 		}
-		nr = append(nr, m)
+		np = append(np, m)
 	}
 
 	// Sort
 	f := func(i, j int) bool {
-		if len(nr[i].match) != len(nr[j].match) {
-			return len(nr[i].match) > len(nr[j].match)
+		if len(np[i].parts) != len(np[j].parts) {
+			return len(np[i].parts) > len(np[j].parts)
 		}
-		for k := 0; k < len(nr[i].match); k++ {
-			if nr[i].match[k] != "@" && nr[j].match[k] == "@" {
+		for k := 0; k < len(np[i].parts); k++ {
+			if np[i].parts[k] != "@" && np[j].parts[k] == "@" {
 				return true
 			}
-			if nr[i].match[k] == "@" && nr[j].match[k] != "@" {
+			if np[i].parts[k] == "@" && np[j].parts[k] != "@" {
 				return false
 			}
 		}
 
 		return false
 	}
-	sort.Slice(nr, f)
+	sort.Slice(np, f)
 
-	return nr
+	return np
 }
 
-type mrow struct {
+type pattern struct {
 	target interface{}
-	match  []string
+	parts  []string
+	iparts []*intern.Value
 }
 
 func (d *Dict) AddBinary(target, v string) {
 	s := strings.Split(v, " ")
 	if len(s) > 0 && s[0] == "is" {
-		d.binary = append(d.binary, mrow{
+		ss := append([]string{"is", "not"}, s[1:]...)
+		d.binary = append(d.binary, pattern{
 			target: &PExprBinary{Op: target, Neg: true},
-			match:  append([]string{"is", "not"}, s[1:]...),
+			parts:  ss,
+			iparts: iparts(ss),
 		})
 		if len(s) > 1 {
-			d.binary = append(d.binary, mrow{
+			ss := s[1:]
+			d.binary = append(d.binary, pattern{
 				target: &PExprBinary{Op: target},
-				match:  s[1:],
+				parts:  ss,
+				iparts: iparts(ss),
 			})
 		}
 	}
-	d.binary = append(d.binary, mrow{
+	d.binary = append(d.binary, pattern{
 		target: &PExprBinary{Op: target},
-		match:  s,
+		parts:  s,
+		iparts: iparts(s),
 	})
 }
 
 func (d *Dict) AddFuncStub(v ...string) {
-	d.ident = append(d.ident, mrow{
+	d.ident = append(d.ident, pattern{
 		target: &PFunc{Name: strings.Join(v, " ")},
-		match:  v,
+		parts:  v,
+		iparts: iparts(v),
 	})
 }
 
@@ -130,22 +139,34 @@ func (d *Dict) addFunc(target interface{}, m []string) {
 		return
 	}
 
-	d.ident = append(d.ident, mrow{
+	d.ident = append(d.ident, pattern{
 		target: target,
-		match:  m,
+		parts:  m,
+		iparts: iparts(m),
 	})
 }
 
 func (d *Dict) Add(target interface{}, v string) {
-	d.ident = append(d.ident, mrow{
+	s := strings.Split(v, " ")
+	d.ident = append(d.ident, pattern{
 		target: target,
-		match:  strings.Split(v, " "),
+		parts:  s,
+		iparts: iparts(s),
 	})
 }
 
 func (d *Dict) Add2(target interface{}, v ...string) {
-	d.ident = append(d.ident, mrow{
+	d.ident = append(d.ident, pattern{
 		target: target,
-		match:  v,
+		parts:  v,
+		iparts: iparts(v),
 	})
+}
+
+func iparts(s []string) []*intern.Value {
+	isl := make([]*intern.Value, len(s))
+	for i := range s {
+		isl[i] = intern.GetByString(strings.ToLower(s[i]))
+	}
+	return isl
 }

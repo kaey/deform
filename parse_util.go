@@ -5,19 +5,20 @@ import (
 	"strings"
 )
 
-func (p *Parser) parseArticle() string {
-	it := p.next()
-	if it.typ != itemWord || !contains(it.val, "a", "an", "the") {
-		p.backup()
-		return ""
+func stripArticle(s string) string {
+	ss := strings.Split(s, " ")
+	if len(ss) < 2 {
+		return s
 	}
-
-	return it.val
+	if contains(ss[0], "A", "An", "The", "a", "an", "the") {
+		return strings.Join(ss[1:], " ")
+	}
+	return s
 }
 
-func (p *Parser) parseArticleCapital() string {
+func (p *Parser) parseArticle() string {
 	it := p.next()
-	if it.typ != itemWord || !contains(it.val, "A", "An", "The", "a", "an", "the") {
+	if it.typ != itemWord || it.val != "A" && it.val != "An" && it.val != "The" && it.val != "a" && it.val != "an" && it.val != "the" {
 		p.backup()
 		return ""
 	}

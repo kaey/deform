@@ -3,14 +3,21 @@ package main
 import (
 	"log"
 	"strconv"
-	"strings"
+
+	"go4.org/intern"
 )
+
+type Memo struct {
+	Target interface{}
+	Idx    int
+}
 
 func ParseExpr(items []item, dict *Dict) (e interface{}, err error) {
 	p := &Parser{
 		items: items,
 		iti:   -1, // calling next() will point to first available item
 		dict:  dict,
+		memo:  make(map[int]Memo, 5),
 	}
 
 	defer func() {
@@ -22,10 +29,6 @@ func ParseExpr(items []item, dict *Dict) (e interface{}, err error) {
 			// panic(p.err)
 			err = p.err
 		}
-		/*if p.iti < len(p.items) {
-			// TODO
-			panic(fmt.Errorf("%v: %v %v %#+v", p.items[0].pos, p.iti, len(p.items), e))
-		}*/
 	}()
 
 	e = p.parseExpr1()
@@ -99,7 +102,7 @@ func (p *Parser) parseExpr3(fnarg bool) interface{} {
 		if b == nil {
 			break
 		}
-		e2 := p.parseExprIdent(false)
+		e2 := p.parseExprIdent(fnarg)
 		if e2 == nil {
 			if fnarg {
 				return nil
@@ -116,14 +119,20 @@ func (p *Parser) parseExpr3(fnarg bool) interface{} {
 
 func (p *Parser) parseExprBinaryRelation() *PExprBinary {
 	iti := p.iti
-	for _, row := range p.dict.binary {
-		if e := p.parseExprTryMatch(row, false); e != nil {
-			return &PExprBinary{Op: e}
+patloop:
+	for _, pat := range p.dict.binary {
+		p.iti = iti
+
+		for _, part := range pat.iparts {
+			if it := p.next(); it.typ != itemWord || part != it.ival {
+				continue patloop
+			}
 		}
 
-		p.iti = iti
+		return &PExprBinary{Op: pat.target}
 	}
 
+	p.iti = iti
 	return nil
 }
 
@@ -153,15 +162,27 @@ func (p *Parser) parseExprBinaryLogic() *PExprBinary {
 	return &PExprBinary{Op: w}
 }
 
+var ifnarg = intern.GetByString("@")
+
 func (p *Parser) parseExprIdent(fnarg bool) interface{} {
+	p.parseArticle()
+	iti := p.iti
+
+	if fnarg {
+		if m, ok := p.memo[p.iti]; ok {
+			p.iti = m.Idx
+			return m.Target
+		}
+	}
+
 	if p.parseLeftParen() {
 		e := p.parseExpr1()
 		p.mustParseRightParen()
-		return e
+		return p.memoize(e, fnarg, iti)
 	}
 
 	if q, ok := p.parseQuotedString(); ok {
-		return q
+		return p.memoize(q, fnarg, iti)
 		// TODO: parse strings
 		/*args := make([]interface{}, 0, 3)
 		for _, pt := range q.Parts {
@@ -186,68 +207,72 @@ func (p *Parser) parseExprIdent(fnarg bool) interface{} {
 
 	if w, ok := p.parseWord(); ok {
 		if w == "true" {
-			return true
+			return p.memoize(true, fnarg, iti)
 		} else if w == "false" {
-			return false
+			return p.memoize(false, fnarg, iti)
 		} else if w == "zero" {
-			return 0
+			return p.memoize(0, fnarg, iti)
 		} else if w == "not" {
-			return "not" // TODO: proper negate op
+			return p.memoize("not", fnarg, iti) // TODO: proper negate op
 		}
 		if len(w) > 2 && w[0] == '<' {
-			return w // TODO: vector
+			return p.memoize(w, fnarg, iti) // TODO: vector
 		}
 		n, err := strconv.Atoi(w)
 		if err == nil {
-			return n
+			return p.memoize(n, fnarg, iti)
 		}
 		f, err := strconv.ParseFloat(w, 64)
 		if err == nil {
-			return f
+			return p.memoize(f, fnarg, iti)
 		}
 		p.backup()
 	}
 
-	iti := p.iti
-
-	for _, row := range p.dict.ident {
-		if e := p.parseExprTryMatch(row, fnarg); e != nil {
-			return e
-		}
+	fnargs := make([]interface{}, 0, 2)
+patloop:
+	for _, pat := range p.dict.ident {
 		p.iti = iti
+		fnargs = fnargs[:0]
+
+		for i, part := range pat.iparts {
+			if i == 0 && fnarg && part == ifnarg {
+				continue patloop
+			}
+			if part == ifnarg {
+				arg := p.parseExpr3(true)
+				if arg == nil {
+					continue patloop
+				}
+				fnargs = append(fnargs, arg)
+				continue
+			}
+
+			if it := p.next(); it.typ != itemWord || part != it.ival {
+				continue patloop
+			}
+		}
+
+		if len(fnargs) > 0 {
+			return p.memoize(&PCall{
+				Target: pat.target,
+				Args:   fnargs,
+			}, fnarg, iti)
+		}
+		return p.memoize(pat.target, fnarg, iti)
 	}
 
+	p.iti = iti
 	return nil
 }
 
-func (p *Parser) parseExprTryMatch(row mrow, fnarg bool) interface{} {
-	fn, isfn := row.target.(*PFunc)
-	var fnargs []interface{}
-
-	p.parseArticle()
-	for i, m := range row.match {
-		if i == 0 && fnarg && m == "@" {
-			return nil
-		}
-		if m == "@" {
-			arg := p.parseExpr3(true)
-			if arg == nil {
-				return nil
-			}
-			fnargs = append(fnargs, arg)
-			continue
-		}
-
-		if w, ok := p.parseWord(); !ok || !strings.EqualFold(m, w) {
-			return nil
+func (p *Parser) memoize(e interface{}, fnarg bool, iti int) interface{} {
+	if fnarg {
+		p.memo[iti] = Memo{
+			Target: e,
+			Idx:    p.iti,
 		}
 	}
 
-	if isfn { // TODO: Actions can have arguments as well.
-		return &PFuncCall{
-			Func: fn,
-			Args: fnargs,
-		}
-	}
-	return row.target
+	return e
 }

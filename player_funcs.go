@@ -10,9 +10,9 @@ type PFunc struct {
 	Phrases []Phrase
 }
 
-type PFuncCall struct {
-	Func *PFunc
-	Args []interface{}
+type PCall struct {
+	Target interface{}
+	Args   []interface{}
 }
 
 func (terp *Interp) addFunc(fn Func) {

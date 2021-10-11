@@ -17,6 +17,7 @@ type Parser struct {
 
 	indent int // current indent level when parsing phrases
 	dict   *Dict
+	memo   map[int]Memo
 }
 
 func Parse(name string, input string) ([]Sentence, error) {
@@ -82,10 +83,6 @@ func (p *Parser) backup() {
 
 func (p *Parser) next() item {
 	p.iti++
-	if p.iti > len(p.items)-1 {
-		// Only used for expression parser.
-		return item{typ: itemEOF}
-	}
 	it := p.items[p.iti]
 	if it.typ == itemError {
 		p.errorf("%s", it.val)
@@ -245,7 +242,7 @@ func (p *Parser) parseDefinition() Sentence {
 	def := Definition{
 		Pos: p.pos,
 	}
-	p.parseArticleCapital()
+	p.parseArticle()
 	def.Object = p.mustParseWordsUntil("is", "are")
 	def.Called = p.parseCalled()
 	p.mustParseWordOneOf("is", "are")
@@ -274,8 +271,7 @@ func (p *Parser) parseCalled() string {
 	}
 
 	p.mustParseWordOneOf("called")
-	p.parseArticle()
-	called := p.mustParseWordsUntil()
+	called := stripArticle(p.mustParseWordsUntil())
 	p.mustParseRightParen()
 
 	return called
@@ -542,7 +538,7 @@ func (p *Parser) parseVerb() Sentence {
 }
 
 func (p *Parser) parseDecl() Sentence {
-	article := p.parseArticleCapital()
+	article := p.parseArticle()
 	if p.parseWordOneOf("File") {
 		p.mustParseWordOneOf("of")
 		return FileOf(p.parseUnknownSentence())
@@ -712,7 +708,6 @@ func (p *Parser) parseDeclVariable() (s Sentence, err error) {
 	v.Name = p.mustParseWordsUntil("is")
 	p.mustParseWordOneOf("is")
 	p.parseArticle()
-	p.parseWordOneOf("indexed") // just ignore this word
 	if p.parseWordOneOf("list") {
 		p.mustParseWordOneOf("of")
 		v.Array = true
@@ -755,8 +750,7 @@ func (p *Parser) parseDeclProp() (s Sentence, err error) {
 	}
 	pr.Kind = p.mustParseWordsUntil("called")
 	if p.parseWordOneOf("called") {
-		p.parseArticle()
-		pr.Name = p.mustParseWordsUntil()
+		pr.Name = stripArticle(p.mustParseWordsUntil())
 	}
 	p.mustParseSentenceEnd()
 	return pr, nil
@@ -930,7 +924,7 @@ func (p *Parser) parseDeclIsIn() (s Sentence, err error) {
 
 	p.mustParseWordOneOf("is", "are")
 	p.mustParseWordOneOf("in")
-	p.parseArticleCapital()
+	p.parseArticle()
 	is.Where = p.mustParseWordsUntil()
 	p.mustParseSentenceEnd()
 	return is, nil
@@ -1042,7 +1036,9 @@ func (p *Parser) parseRawPhrases() []item {
 	start := p.iti
 	for {
 		if it.typ == itemSentenceEnd {
-			items := p.items[start:p.iti]
+			items := make([]item, p.iti-start+1)
+			copy(items, p.items[start:p.iti])
+			items[len(items)-1] = item{typ: itemEOF}
 			p.backup()
 			return items
 		}
@@ -1058,13 +1054,17 @@ func (p *Parser) parseRawExpr() []item {
 		case itemLeftParen:
 			// Don't consume "(this is the blabla rule)" as it's part of rule declaration.
 			if p.peek().val == "this" {
-				items := p.items[start:p.iti]
+				items := make([]item, p.iti-start+1)
+				copy(items, p.items[start:p.iti])
+				items[len(items)-1] = item{typ: itemEOF}
 				p.backup()
 				return items
 			}
 		case itemWord, itemRightParen:
 		case itemColon, itemSentenceEnd:
-			items := p.items[start:p.iti]
+			items := make([]item, p.iti-start+1)
+			copy(items, p.items[start:p.iti])
+			items[len(items)-1] = item{typ: itemEOF}
 			p.backup()
 			return items
 		default:

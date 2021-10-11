@@ -2,8 +2,11 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"go4.org/intern"
 )
 
 type itemType int
@@ -30,9 +33,10 @@ const (
 )
 
 type item struct {
-	typ itemType
-	val string
-	pos Pos
+	typ  itemType
+	ival *intern.Value
+	val  string
+	pos  Pos
 }
 
 type Pos struct {
@@ -102,13 +106,14 @@ func (l *lexer) backup() {
 }
 
 func (l *lexer) emit(typ itemType) {
-	it := item{typ, l.input[l.start.Pos:l.pos.Pos], l.start}
+	val := l.input[l.start.Pos:l.pos.Pos]
+	it := item{typ, intern.GetByString(strings.ToLower(val)), val, l.start}
 	l.items = append(l.items, it)
 	l.start = l.pos
 }
 
 func (l *lexer) errorf(format string, args ...interface{}) stateFn {
-	it := item{itemError, fmt.Sprintf(format, args...), l.start}
+	it := item{itemError, nil, fmt.Sprintf(format, args...), l.start}
 	l.items = append(l.items, it)
 	return nil
 }

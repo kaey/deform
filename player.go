@@ -515,12 +515,12 @@ func (terp *Interp) secondStage() error {
 
 	terp.dict.Sort()
 
-	for _, row := range terp.dict.ident {
-		fmt.Fprintf(Log("dict-ident"), "%v\n", row.match)
+	for _, pat := range terp.dict.ident {
+		fmt.Fprintf(Log("dict-ident"), "%v\n", pat.parts)
 	}
 
-	for _, row := range terp.dict.binary {
-		fmt.Fprintf(Log("dict-binary"), "%v\n", row.match)
+	for _, pat := range terp.dict.binary {
+		fmt.Fprintf(Log("dict-binary"), "%v\n", pat.parts)
 	}
 
 	/*{
@@ -550,7 +550,7 @@ func (terp *Interp) secondStage() error {
 		wg.Wait()
 	}*/
 
-	{
+	/*{
 		wg := new(sync.WaitGroup)
 		li := make(chan struct{}, 6)
 		for _, r := range terp.tmp.rules {
@@ -573,7 +573,7 @@ func (terp *Interp) secondStage() error {
 			}()
 		}
 		wg.Wait()
-	}
+	}*/
 
 	{
 		wg := new(sync.WaitGroup)
